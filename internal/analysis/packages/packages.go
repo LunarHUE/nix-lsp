@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -305,7 +306,18 @@ func (d *Doc) Markdown() string {
 		blocks = append(blocks, desc)
 	}
 	if d.Homepage != "" {
-		blocks = append(blocks, "*Homepage:* "+d.Homepage)
+		blocks = append(blocks, "*Homepage:* "+homepageMarkdown(d.Homepage))
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+// homepageMarkdown renders a homepage as a markdown link labelled by the URL
+// itself when it parses as an http(s) URL with a host; anything else (a bare
+// "see readme", a mailto:, a malformed value) stays plain text, defensively, so
+// only a real web address becomes a clickable link.
+func homepageMarkdown(homepage string) string {
+	if u, err := url.Parse(homepage); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		return "[" + homepage + "](" + homepage + ")"
+	}
+	return homepage
 }

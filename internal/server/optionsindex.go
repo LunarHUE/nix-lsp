@@ -138,6 +138,10 @@ func (h *Handler) startOptionsAutoLoad() {
 // leaves the index unset.
 func (h *Handler) loadOptionsAuto(ctx context.Context) {
 	channel := h.optionsChannelFromLock(ctx)
+	// Record the channel so option hover can link declaration paths to their
+	// nixpkgs source. Only auto mode sets this; explicit-path loads leave it empty
+	// and keep declarations backticked.
+	h.setOptionsChannel(channel)
 
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {

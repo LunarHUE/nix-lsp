@@ -42,7 +42,7 @@ func (h *Handler) optionHover(ctx context.Context, uri string, pos syntax.Positi
 	// The hover range stays the hovered segment even when a shorter prefix
 	// matched; the header names the matched path so it never overclaims.
 	return &Hover{
-		Contents: MarkupContent{Kind: "markdown", Value: doc.MarkdownFor(matched)},
+		Contents: MarkupContent{Kind: "markdown", Value: doc.MarkdownForChannel(matched, h.optionsChannelString())},
 		Range:    toProtocolRange(r),
 	}
 }

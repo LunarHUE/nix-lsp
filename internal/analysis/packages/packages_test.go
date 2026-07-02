@@ -231,7 +231,7 @@ func TestMarkdownGolden(t *testing.T) {
 	}
 	want := "**claude-code** `2.1.193`\n\n" +
 		"Agentic coding tool that lives in your terminal\n\n" +
-		"*Homepage:* https://github.com/anthropics/claude-code"
+		"*Homepage:* [https://github.com/anthropics/claude-code](https://github.com/anthropics/claude-code)"
 	if got := doc.Markdown(); got != want {
 		t.Errorf("Markdown mismatch:\n got:\n%s\nwant:\n%s", got, want)
 	}
@@ -240,6 +240,16 @@ func TestMarkdownGolden(t *testing.T) {
 	wantGit := "**git** `2.49.0`\n\nDistributed version control system"
 	if got := git.Markdown(); got != wantGit {
 		t.Errorf("git Markdown mismatch:\n got:\n%s\nwant:\n%s", got, wantGit)
+	}
+}
+
+// TestMarkdownHomepageNonURL proves a homepage that does not parse as an http(s)
+// URL stays plain text rather than becoming a (broken) markdown link.
+func TestMarkdownHomepageNonURL(t *testing.T) {
+	d := &Doc{Pname: "odd", Version: "1.0", Homepage: "see readme"}
+	want := "**odd** `1.0`\n\n*Homepage:* see readme"
+	if got := d.Markdown(); got != want {
+		t.Errorf("Markdown = %q, want %q", got, want)
 	}
 }
 

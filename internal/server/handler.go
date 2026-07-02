@@ -63,6 +63,12 @@ type Handler struct {
 	optionsDownloadEnabled bool
 	optionsCtx             context.Context
 	optionsCancel          context.CancelFunc
+	// optionsChannel names the channel an auto-mode options load resolved the
+	// dataset from (e.g. "nixos-25.05"). It is recorded only when auto mode
+	// resolves the channel and drives option hover's "Declared in" source links;
+	// explicit-path and fixture loads leave it empty, so those hovers keep the
+	// declarations backticked. Guarded by mu.
+	optionsChannel string
 
 	// packages holds the channel packages dataset for package-version hover. It
 	// mirrors the options fields: packagesIndex is swapped atomically once a load
@@ -92,6 +98,21 @@ func (h *Handler) packagesChannelString() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.packagesChannel
+}
+
+// setOptionsChannel records the channel an auto-mode options load resolved.
+func (h *Handler) setOptionsChannel(channel string) {
+	h.mu.Lock()
+	h.optionsChannel = channel
+	h.mu.Unlock()
+}
+
+// optionsChannelString returns the recorded auto-mode options channel, or ""
+// when the dataset came from an explicit path or has not loaded.
+func (h *Handler) optionsChannelString() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.optionsChannel
 }
 
 // NewHandler creates a handler with empty in-memory state.

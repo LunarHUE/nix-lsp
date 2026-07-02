@@ -175,6 +175,62 @@ func TestHandlerHoverOptionDoc(t *testing.T) {
 	}
 }
 
+// TestHandlerHoverOptionDeclarationLink mirrors the packages provenance test: it
+// records an options channel directly (as an auto-mode load would) and asserts
+// the "Declared in" path renders as a GitHub blob link on that channel branch.
+func TestHandlerHoverOptionDeclarationLink(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	root := t.TempDir()
+	modPath := filepath.Join(root, "mod.nix")
+	writeFile(t, modPath, modFixture)
+	initWithOptions(t, handler, root, optionsFixturePath(t))
+	// Simulate an auto-mode load having recorded the channel.
+	handler.setOptionsChannel("nixos-25.05")
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, modFixture)
+
+	line, char := posOf(t, modFixture, "allowedTCPPorts", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want option-doc hover")
+	}
+	value := hover.Contents.Value
+	want := "https://github.com/NixOS/nixpkgs/blob/nixos-25.05/nixos/modules/services/networking/firewall.nix"
+	if !strings.Contains(value, want) {
+		t.Errorf("hover value missing declaration link %q:\n%s", want, value)
+	}
+}
+
+// TestHandlerHoverOptionFixtureNoLink is the negative counterpart: a fixture-mode
+// (explicit-path) load records no channel, so the "Declared in" line stays and no
+// GitHub link is emitted.
+func TestHandlerHoverOptionFixtureNoLink(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	root := t.TempDir()
+	modPath := filepath.Join(root, "mod.nix")
+	writeFile(t, modPath, modFixture)
+	initWithOptions(t, handler, root, optionsFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, modFixture)
+
+	line, char := posOf(t, modFixture, "allowedTCPPorts", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want option-doc hover")
+	}
+	value := hover.Contents.Value
+	if !strings.Contains(value, "Declared in") {
+		t.Errorf("hover value missing \"Declared in\":\n%s", value)
+	}
+	if strings.Contains(value, "github.com") {
+		t.Errorf("fixture-mode hover carries a github.com link (channel should be empty):\n%s", value)
+	}
+}
+
 func TestHandlerHoverOptionOffReturnsNull(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()

@@ -308,6 +308,45 @@ func TestMarkdownGoldenWithExample(t *testing.T) {
 	}
 }
 
+// TestMarkdownForChannelLinksDeclaration proves that with a channel set, a
+// nixpkgs-relative declaration path becomes a markdown link to the file on that
+// channel's branch of nixpkgs on GitHub, using the exact blob URL.
+func TestMarkdownForChannelLinksDeclaration(t *testing.T) {
+	ix := loadFixture(t)
+	doc, ok := ix.Lookup([]string{"networking", "firewall", "allowedTCPPorts"})
+	if !ok {
+		t.Fatal("allowedTCPPorts not found")
+	}
+	path := []string{"networking", "firewall", "allowedTCPPorts"}
+	want := "**networking.firewall.allowedTCPPorts**\n\n" +
+		"List of TCP ports on which incoming connections are\naccepted.\n\n" +
+		"*Type:* `list of 16 bit unsigned integer; between 0 and 65535 (both inclusive)`\n\n" +
+		"*Default:*\n```nix\n[ ]\n```\n\n" +
+		"*Example:*\n```nix\n[\n  22\n  80\n]\n```\n\n" +
+		"*Declared in:* [nixos/modules/services/networking/firewall.nix]" +
+		"(https://github.com/NixOS/nixpkgs/blob/nixos-25.05/nixos/modules/services/networking/firewall.nix)"
+	if got := doc.MarkdownForChannel(path, "nixos-25.05"); got != want {
+		t.Errorf("MarkdownForChannel mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestMarkdownForChannelNonPathStaysBackticked proves a declaration that is not a
+// nixpkgs-relative path (here an absolute store path) stays backticked even when
+// a channel is set, so only linkable source paths become links.
+func TestMarkdownForChannelNonPathStaysBackticked(t *testing.T) {
+	doc := &Doc{
+		Loc:          []string{"foo", "bar"},
+		Type:         "boolean",
+		Declarations: []string{"/nix/store/abc-source/default.nix"},
+	}
+	want := "**foo.bar**\n\n" +
+		"*Type:* `boolean`\n\n" +
+		"*Declared in:* `/nix/store/abc-source/default.nix`"
+	if got := doc.MarkdownForChannel([]string{"foo", "bar"}, "nixos-25.05"); got != want {
+		t.Errorf("MarkdownForChannel mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestMarkdownForGoldenConcreteInstance(t *testing.T) {
 	ix := loadFixture(t)
 	doc, ok := ix.Lookup([]string{"systemd", "services", "demo-web", "description"})

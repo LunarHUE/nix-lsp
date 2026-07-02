@@ -7,6 +7,11 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-02 (evening)
 
+- **Clickable hover links**: package homepages render as markdown links, and
+  option "Declared in" paths link to the declaring module's source on the
+  dataset channel's branch of nixpkgs on GitHub (plain text in offline/fixture
+  mode or for non-nixpkgs paths).
+
 - **Dot-triggered completion everywhere**: typing `.` (or invoking completion)
   now completes NixOS option paths (`networking.<cursor>` offers `firewall`
   with type and docs; works through submodule instances like
