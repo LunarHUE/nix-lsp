@@ -14,6 +14,22 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
+// Diagnostic codes are stable, machine-readable identifiers for each static
+// diagnostic kind. Code actions and clients key on them.
+const (
+	// CodeMissingImport marks an import whose target does not exist.
+	CodeMissingImport = "missing-import"
+	// CodeUntrackedImport marks a flake import whose target exists on disk but
+	// is not git-tracked (so a Nix flake will not see it).
+	CodeUntrackedImport = "untracked-import"
+	// CodeUnusedBinding marks a let binding that is never referenced.
+	CodeUnusedBinding = "unused-binding"
+	// CodeDuplicateBinding marks a name introduced twice in one binding set.
+	CodeDuplicateBinding = "duplicate-binding"
+	// CodeBadInherit marks a bare inherit of an undefined variable.
+	CodeBadInherit = "bad-inherit"
+)
+
 // FileDiagnostics returns static diagnostics for one parsed file.
 func FileDiagnostics(workspace project.Workspace, sourcePath string, tree *syntax.Tree) ([]syntax.Diagnostic, error) {
 	tracked := trackedFiles(workspace)
@@ -32,13 +48,15 @@ func ImportDiagnostics(workspace project.Workspace, edges []importedges.Edge) []
 			diagnostics = append(diagnostics, syntax.Diagnostic{
 				Message: fmt.Sprintf("missing import target %s", edge.Literal),
 				Range:   edge.Range,
+				Code:    CodeMissingImport,
 			})
 			continue
 		}
-		if shouldWarnUntracked(workspace, edge) {
+		if ShouldWarnUntracked(workspace, edge) {
 			diagnostics = append(diagnostics, syntax.Diagnostic{
 				Message:  fmt.Sprintf("import target %s exists but is not git-tracked; Nix flakes only see git-tracked files, so run git add", edge.Literal),
 				Range:    edge.Range,
+				Code:     CodeUntrackedImport,
 				Severity: syntax.SeverityWarning,
 			})
 		}
@@ -92,6 +110,7 @@ func unusedBindingDiagnostics(file *scopes.File) []syntax.Diagnostic {
 		diagnostics = append(diagnostics, syntax.Diagnostic{
 			Message:  fmt.Sprintf("unused binding %q", b.Name),
 			Range:    b.NameRange,
+			Code:     CodeUnusedBinding,
 			Severity: syntax.SeverityWarning,
 		})
 	}
@@ -125,6 +144,7 @@ func badInheritDiagnostics(file *scopes.File) []syntax.Diagnostic {
 		diagnostics = append(diagnostics, syntax.Diagnostic{
 			Message:  fmt.Sprintf("inherit of undefined variable %q", ref.Name),
 			Range:    ref.Range,
+			Code:     CodeBadInherit,
 			Severity: syntax.SeverityError,
 		})
 	}
@@ -153,6 +173,7 @@ func duplicateBindingDiagnostics(tree *syntax.Tree) []syntax.Diagnostic {
 					diagnostics = append(diagnostics, syntax.Diagnostic{
 						Message:  fmt.Sprintf("duplicate binding %q", name.display),
 						Range:    name.rng,
+						Code:     CodeDuplicateBinding,
 						Severity: syntax.SeverityError,
 					})
 					continue
@@ -250,7 +271,11 @@ func WorkspaceDiagnostics(workspace project.Workspace, snapshot *vfs.Snapshot) m
 	return diagnostics
 }
 
-func shouldWarnUntracked(workspace project.Workspace, edge importedges.Edge) bool {
+// ShouldWarnUntracked reports whether edge triggers the flake untracked-import
+// warning: a flake+git workspace, an existing but untracked .nix target inside
+// the workspace root. The code-action handler reuses it to decide where the
+// quick fix applies, so it must stay in lockstep with the diagnostic.
+func ShouldWarnUntracked(workspace project.Workspace, edge importedges.Edge) bool {
 	if !workspace.HasFlake || !workspace.HasGit || edge.GitTracked {
 		return false
 	}

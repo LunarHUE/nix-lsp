@@ -107,7 +107,12 @@ The same import checks fire for `imports = [ ./x.nix ]` and
 `callPackage ./x.nix` references. In a flake workspace under git, an import
 target that exists but is not git-tracked reports
 `import target ./x.nix exists but is not git-tracked; Nix flakes only see
-git-tracked files, so run git add`.
+git-tracked files, so run git add`. That warning carries a quick fix: put the
+cursor on the import path and open the lightbulb (`Ctrl+.`) to run
+**Run git add &lt;target&gt;**. Accepting it stages the file with `git add` and
+the diagnostics refresh on their own once the file is tracked — no manual
+reload. The quick fix only appears where the warning does; a missing (not just
+untracked) import target has no fix, since `git add` cannot conjure the file.
 
 ### Current limitations
 
@@ -115,7 +120,7 @@ git-tracked files, so run git add`.
 
 - Syntax diagnostics (tree-sitter `ERROR`/`MISSING` nodes).
 - Import diagnostics (missing / untracked `import`, `imports = [ ... ]`, and
-  `callPackage` targets).
+  `callPackage` targets), with a **Run git add** quick fix for the untracked case.
 - Binding diagnostics: unused bindings (warning), plus duplicate and
   bad-`inherit` bindings (error).
 - Document symbols (outline), go-to-definition, find-all-references, folding

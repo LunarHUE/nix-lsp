@@ -239,13 +239,21 @@ type InitializeResult struct {
 }
 
 type ServerCapabilities struct {
-	TextDocumentSync          int  `json:"textDocumentSync,omitempty"`
-	DocumentSymbolProvider    bool `json:"documentSymbolProvider,omitempty"`
-	DefinitionProvider        bool `json:"definitionProvider,omitempty"`
-	DocumentHighlightProvider bool `json:"documentHighlightProvider,omitempty"`
-	ReferencesProvider        bool `json:"referencesProvider,omitempty"`
-	FoldingRangeProvider      bool `json:"foldingRangeProvider,omitempty"`
-	WorkspaceSymbolProvider   bool `json:"workspaceSymbolProvider,omitempty"`
+	TextDocumentSync          int                    `json:"textDocumentSync,omitempty"`
+	DocumentSymbolProvider    bool                   `json:"documentSymbolProvider,omitempty"`
+	DefinitionProvider        bool                   `json:"definitionProvider,omitempty"`
+	DocumentHighlightProvider bool                   `json:"documentHighlightProvider,omitempty"`
+	ReferencesProvider        bool                   `json:"referencesProvider,omitempty"`
+	FoldingRangeProvider      bool                   `json:"foldingRangeProvider,omitempty"`
+	WorkspaceSymbolProvider   bool                   `json:"workspaceSymbolProvider,omitempty"`
+	CodeActionProvider        bool                   `json:"codeActionProvider,omitempty"`
+	ExecuteCommandProvider    *ExecuteCommandOptions `json:"executeCommandProvider,omitempty"`
+}
+
+// ExecuteCommandOptions advertises the workspace/executeCommand commands the
+// server understands.
+type ExecuteCommandOptions struct {
+	Commands []string `json:"commands"`
 }
 
 type ServerInfo struct {

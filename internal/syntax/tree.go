@@ -29,8 +29,12 @@ const (
 // Diagnostic is the syntax package's internal diagnostic shape. The LSP layer
 // is responsible for converting it to protocol-specific diagnostics.
 type Diagnostic struct {
-	Message  string
-	Range    Range
+	Message string
+	Range   Range
+	// Code is a stable, machine-readable identifier for the diagnostic kind
+	// (e.g. "untracked-import"). An empty string means the diagnostic is
+	// uncoded. Clients and code-action handlers key on it.
+	Code     string
 	Severity Severity
 }
 
@@ -113,6 +117,7 @@ func (t *Tree) Diagnostics() []Diagnostic {
 			diagnostics = append(diagnostics, Diagnostic{
 				Message: "missing syntax",
 				Range:   node.Range(),
+				Code:    "missing-syntax",
 			})
 			return true
 		}
@@ -120,6 +125,7 @@ func (t *Tree) Diagnostics() []Diagnostic {
 			diagnostics = append(diagnostics, Diagnostic{
 				Message: "syntax error",
 				Range:   node.Range(),
+				Code:    "syntax-error",
 			})
 		}
 		return true

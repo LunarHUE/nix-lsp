@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/imports"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/scopes"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/static"
+	"github.com/wesleybaldwin/nix-lsp/internal/project"
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
@@ -56,6 +59,34 @@ type foldingRangeParams struct {
 
 type workspaceSymbolParams struct {
 	Query string `json:"query"`
+}
+
+type codeActionParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Range        protocolRange          `json:"range"`
+	Context      codeActionContext      `json:"context"`
+}
+
+type codeActionContext struct {
+	Diagnostics []protocolDiagnostic `json:"diagnostics"`
+	Only        []string             `json:"only"`
+}
+
+// Command is an LSP command a code action can run.
+type Command struct {
+	Title     string `json:"title"`
+	Command   string `json:"command"`
+	Arguments []any  `json:"arguments,omitempty"`
+}
+
+// CodeAction is a single LSP code action. Here it is always a quick fix that
+// runs a client-executed command.
+type CodeAction struct {
+	Title       string               `json:"title"`
+	Kind        string               `json:"kind,omitempty"`
+	Diagnostics []protocolDiagnostic `json:"diagnostics,omitempty"`
+	IsPreferred bool                 `json:"isPreferred,omitempty"`
+	Command     *Command             `json:"command,omitempty"`
 }
 
 // SymbolInformation is the flat LSP workspace-symbol shape: a name, kind, and a
@@ -181,6 +212,119 @@ func (h *Handler) foldingRange(ctx context.Context, params json.RawMessage) (any
 		return nil, nil
 	}
 	return foldingRanges(tree), nil
+}
+
+// codeAction answers textDocument/codeAction. The only action it offers is the
+// "Run git add" quick fix for an untracked flake import target, and only where
+// the untracked-import warning itself appears, so the lightbulb never shows a
+// fix that would not help. Like the other feature handlers it returns nil, nil
+// (LSP null) on any failure; a null result means "no actions".
+func (h *Handler) codeAction(ctx context.Context, params json.RawMessage) (any, error) {
+	var decoded codeActionParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return nil, nil
+	}
+	if !quickfixRequested(decoded.Context.Only) {
+		return nil, nil
+	}
+	fileID, ok := h.fileInputForURI(decoded.TextDocument.URI)
+	if !ok {
+		return nil, nil
+	}
+	workspace, ok := h.Workspace()
+	if !ok {
+		return nil, nil
+	}
+	edges, err := facts.ImportEdges(ctx, h.memo, fileID)
+	if err != nil {
+		return nil, nil
+	}
+
+	requested := syntax.Range{
+		Start: syntax.Position{Line: decoded.Range.Start.Line, Character: decoded.Range.Start.Character},
+		End:   syntax.Position{Line: decoded.Range.End.Line, Character: decoded.Range.End.Character},
+	}
+	var actions []CodeAction
+	for _, edge := range edges {
+		// Guard Exists exactly as ImportDiagnostics does: a missing target is a
+		// separate (non-fixable) diagnostic, and ShouldWarnUntracked alone does
+		// not distinguish it. This keeps the fix strictly where the warning is.
+		if !edge.Exists || !static.ShouldWarnUntracked(workspace, edge) {
+			continue
+		}
+		if !rangesOverlap(edge.Range, requested) {
+			continue
+		}
+		actions = append(actions, h.gitAddCodeAction(ctx, fileID, workspace, edge))
+	}
+	if len(actions) == 0 {
+		return nil, nil
+	}
+	return actions, nil
+}
+
+// gitAddCodeAction builds the quick fix for one untracked import edge. The
+// command argument is the absolute normalized target path; the title shows the
+// workspace-relative path when it can be computed.
+func (h *Handler) gitAddCodeAction(ctx context.Context, fileID string, workspace project.Workspace, edge imports.Edge) CodeAction {
+	display := edge.TargetPath
+	if rel, err := filepath.Rel(workspace.Root, edge.TargetPath); err == nil {
+		display = rel
+	}
+	title := "Run git add " + display
+
+	action := CodeAction{
+		Title:       title,
+		Kind:        "quickfix",
+		IsPreferred: true,
+		Command: &Command{
+			Title:     title,
+			Command:   commandGitAdd,
+			Arguments: []any{edge.TargetPath},
+		},
+	}
+	// Attach the exact untracked-import diagnostic this fix resolves, so clients
+	// that pair actions with diagnostics light up the right squiggle. Omit the
+	// field entirely if diagnostics cannot be recomputed.
+	if diagnostics, err := facts.FileDiagnostics(ctx, h.memo, fileID); err == nil {
+		action.Diagnostics = untrackedDiagnosticsForEdge(diagnostics, edge)
+	}
+	return action
+}
+
+// untrackedDiagnosticsForEdge returns the protocol form of exactly the
+// untracked-import diagnostics anchored on edge's range.
+func untrackedDiagnosticsForEdge(diagnostics []syntax.Diagnostic, edge imports.Edge) []protocolDiagnostic {
+	var matched []syntax.Diagnostic
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == static.CodeUntrackedImport && diagnostic.Range == edge.Range {
+			matched = append(matched, diagnostic)
+		}
+	}
+	return toProtocolDiagnostics(matched)
+}
+
+// quickfixRequested reports whether a code-action request accepts quick fixes.
+// An absent or empty `only` accepts anything; otherwise an entry matches when it
+// is empty, equals "quickfix", or is an ancestor kind of "quickfix" (LSP kind
+// hierarchy: the action kind starts with the requested kind + ".").
+func quickfixRequested(only []string) bool {
+	if len(only) == 0 {
+		return true
+	}
+	for _, kind := range only {
+		if kind == "" || kind == "quickfix" || strings.HasPrefix("quickfix", kind+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// rangesOverlap reports whether two ranges intersect, counting a shared
+// endpoint as an overlap. A cursor (empty) range reduces to a position-in-range
+// test.
+func rangesOverlap(a, b syntax.Range) bool {
+	return !positionLess(b.End, a.Start) && !positionLess(a.End, b.Start)
 }
 
 // workspaceSymbol answers workspace/symbol by scanning every file in the current

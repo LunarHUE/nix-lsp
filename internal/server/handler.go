@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
@@ -17,7 +18,14 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
-const errMethodNotFound = -32601
+const (
+	errMethodNotFound = -32601
+	errInvalidParams  = -32602
+)
+
+// commandGitAdd is the workspace/executeCommand command that stages an
+// untracked flake import target with git add.
+const commandGitAdd = "nix-lsp.gitAdd"
 
 // Handler is the main LSP handler for nixls.
 type Handler struct {
@@ -85,6 +93,8 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				ReferencesProvider:        true,
 				FoldingRangeProvider:      true,
 				WorkspaceSymbolProvider:   true,
+				CodeActionProvider:        true,
+				ExecuteCommandProvider:    &lsp.ExecuteCommandOptions{Commands: []string{commandGitAdd}},
 			},
 			ServerInfo: &lsp.ServerInfo{
 				Name: "nix-lsp",
@@ -106,8 +116,12 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		return h.references(ctx, params)
 	case "textDocument/foldingRange":
 		return h.foldingRange(ctx, params)
+	case "textDocument/codeAction":
+		return h.codeAction(ctx, params)
 	case "workspace/symbol":
 		return h.workspaceSymbol(ctx, params)
+	case "workspace/executeCommand":
+		return h.executeCommand(ctx, params)
 	case "workspace/didChangeWatchedFiles":
 		return nil, h.didChangeWatchedFiles(params)
 	case "textDocument/didSave", "workspace/didChangeConfiguration":
@@ -387,6 +401,73 @@ func openFiles(snapshot *vfs.Snapshot) []watchedFileChange {
 	return files
 }
 
+// executeCommand handles workspace/executeCommand. It is a state-mutating
+// request, so unlike the read-only feature handlers it returns real JSON-RPC
+// errors: an unknown command, a malformed argument, or a path that fails the
+// safety checks all yield -32602. The only supported command stages an
+// untracked flake import target with git add, then triggers a background
+// workspace refresh so the untracked-import warnings clear on their own.
+func (h *Handler) executeCommand(_ context.Context, params json.RawMessage) (any, error) {
+	var decoded executeCommandParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("decode executeCommand params: %v", err)}
+	}
+	if decoded.Command != commandGitAdd {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("unknown command %q", decoded.Command)}
+	}
+	if len(decoded.Arguments) != 1 {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("%s expects exactly one argument, got %d", commandGitAdd, len(decoded.Arguments))}
+	}
+	var arg string
+	if err := json.Unmarshal(decoded.Arguments[0], &arg); err != nil || arg == "" {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("%s argument must be a non-empty path string", commandGitAdd)}
+	}
+
+	path, err := vfs.NormalizePath(arg)
+	if err != nil {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("%s: invalid path: %v", commandGitAdd, err)}
+	}
+
+	workspace, ok := h.Workspace()
+	root := workspace.Root
+	// Guard against a broken or malicious client asking the server to git-add an
+	// arbitrary path: the target must be a .nix file inside a known workspace root.
+	if !ok || root == "" {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("%s: no workspace", commandGitAdd)}
+	}
+	if filepath.Ext(path) != ".nix" {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("%s: not a .nix file: %s", commandGitAdd, path)}
+	}
+	if !withinRoot(root, path) {
+		return nil, &lsp.ResponseError{Code: errInvalidParams, Message: fmt.Sprintf("%s: path outside workspace: %s", commandGitAdd, path)}
+	}
+
+	if err := project.GitAdd(root, path); err != nil {
+		return nil, err
+	}
+
+	// Re-discovery picks up the newly-tracked file; refreshWatchedFiles then
+	// recomputes the open files, clearing their untracked-import warnings.
+	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+		return h.refreshWatchedFiles(ctx, root, nil)
+	})
+	return nil, nil
+}
+
+// withinRoot reports whether path is root itself or nested beneath it. It
+// mirrors the static package's own guard; the server keeps its own copy so the
+// executeCommand safety check does not depend on an exported static helper.
+func withinRoot(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
 func (h *Handler) scheduleFileDiagnostics(uri string, path string, debounce bool) {
 	generation := h.nextGeneration()
 	snapshot := h.vfs.Snapshot()
@@ -487,9 +568,16 @@ type didChangeWatchedFilesParams struct {
 }
 
 type fileEvent struct {
-	URI  string `json:"uri"`
+	URI string `json:"uri"`
 	// Type is the LSP FileChangeType: 1=Created, 2=Changed, 3=Deleted.
 	Type int `json:"type"`
+}
+
+type executeCommandParams struct {
+	Command string `json:"command"`
+	// Arguments stays raw so the single string argument can be decoded and
+	// validated explicitly rather than through a loose any conversion.
+	Arguments []json.RawMessage `json:"arguments"`
 }
 
 type publishDiagnosticsParams struct {
@@ -500,6 +588,7 @@ type publishDiagnosticsParams struct {
 type protocolDiagnostic struct {
 	Range    protocolRange `json:"range"`
 	Severity int           `json:"severity,omitempty"`
+	Code     string        `json:"code,omitempty"`
 	Source   string        `json:"source,omitempty"`
 	Message  string        `json:"message"`
 }
@@ -556,6 +645,7 @@ func toProtocolDiagnostics(diagnostics []syntax.Diagnostic) []protocolDiagnostic
 				End:   toProtocolPosition(diagnostic.Range.End),
 			},
 			Severity: lspSeverity(diagnostic.Severity),
+			Code:     diagnostic.Code,
 			Source:   "nix-lsp",
 			Message:  diagnostic.Message,
 		})

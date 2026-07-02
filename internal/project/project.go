@@ -239,6 +239,21 @@ func gitTrackedNixFiles(root string) map[string]bool {
 	return tracked
 }
 
+// GitAdd stages path in the git repository rooted at root by running
+// `git -C root add -- path`. On failure it returns an error that includes the
+// trimmed git output so the caller can surface why staging failed.
+func GitAdd(root, path string) error {
+	cmd := exec.Command("git", "-C", root, "add", "--", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			return fmt.Errorf("git add %s: %w: %s", path, err, trimmed)
+		}
+		return fmt.Errorf("git add %s: %w", path, err)
+	}
+	return nil
+}
+
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
