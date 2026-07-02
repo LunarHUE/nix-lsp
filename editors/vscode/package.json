@@ -43,6 +43,17 @@
         "language": "nix",
         "scopeName": "source.nix",
         "path": "./syntaxes/nix.tmLanguage.json"
+      },
+      {
+        "scopeName": "source.nix.embedded-shell",
+        "path": "./syntaxes/nix-embedded-shell.tmLanguage.json",
+        "injectTo": [
+          "source.nix"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.shellscript": "shellscript",
+          "meta.embedded.expression.nix": "nix"
+        }
       }
     ],
     "configuration": {
