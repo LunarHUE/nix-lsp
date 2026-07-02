@@ -155,12 +155,22 @@ func (h *Handler) definition(ctx context.Context, params json.RawMessage) (any, 
 	if !ok {
 		return nil, nil
 	}
+	pos := syntax.Position{Line: decoded.Position.Line, Character: decoded.Position.Character}
+	uri := decoded.TextDocument.URI
+
+	// An `inherit (import ./x.nix) name;` attr resolves to its own binding under
+	// scope analysis, which would shadow the cross-file jump. Try the cross-file
+	// jump first, but only for the inherit-from case; bare `inherit name;` keeps
+	// its existing self-definition behavior.
+	if location := h.inheritSelectDefinition(ctx, fileID, uri, pos); location != nil {
+		return location, nil
+	}
+
 	file, err := facts.Scopes(ctx, h.memo, fileID)
 	if err != nil || file == nil {
 		return nil, nil
 	}
-	pos := syntax.Position{Line: decoded.Position.Line, Character: decoded.Position.Character}
-	if location := definitionAt(file, decoded.TextDocument.URI, pos); location != nil {
+	if location := definitionAt(file, uri, pos); location != nil {
 		return location, nil
 	}
 	// Fall back to import-path resolution: gd on `import ./foo.nix`,
@@ -170,6 +180,11 @@ func (h *Handler) definition(ctx context.Context, params json.RawMessage) (any, 
 		return nil, nil
 	}
 	if location := importDefinitionAt(edges, pos); location != nil {
+		return location, nil
+	}
+	// Finally, gd on the attribute part of a select expression (`lib.foo`)
+	// resolves through an import into the target file, or into a local attrset.
+	if location := h.selectDefinition(ctx, fileID, uri, pos); location != nil {
 		return location, nil
 	}
 	return nil, nil
@@ -525,6 +540,239 @@ func importDefinitionAt(edges []imports.Edge, pos syntax.Position) *Location {
 		return &Location{URI: uri}
 	}
 	return nil
+}
+
+// selectDefinition resolves gd on the attribute part of a select expression
+// (`lib.foo`, `pkgs.a.b`). It finds the innermost select whose attrpath contains
+// pos on a static identifier segment, takes the segments up to and including the
+// cursor as the wanted path, and resolves that path either across an import edge
+// into the target file or, when the base is a local binding whose value is an
+// attribute set literal, within the current file. Anything ambiguous or dynamic
+// yields nil so definition falls through to a null result.
+func (h *Handler) selectDefinition(ctx context.Context, fileID, uri string, pos syntax.Position) *Location {
+	tree, err := facts.ParseTree(ctx, h.memo, fileID)
+	if err != nil || tree == nil {
+		return nil
+	}
+	base, wanted, ok := selectTargetAt(tree, pos)
+	if !ok {
+		return nil
+	}
+	edges, err := facts.ImportEdges(ctx, h.memo, fileID)
+	if err != nil {
+		return nil
+	}
+
+	if base.Kind() == "variable_expression" {
+		// The base is a name: it must resolve to a local let/rec binding whose
+		// value we can search. A `with`-provided or unresolved name, or a function
+		// parameter (whose value is unknowable), is not followed.
+		file, err := facts.Scopes(ctx, h.memo, fileID)
+		if err != nil || file == nil {
+			return nil
+		}
+		ref := file.ReferenceAt(base.Range().Start)
+		if ref == nil || ref.WithUncertain || ref.Target == nil {
+			return nil
+		}
+		switch ref.Target.Kind {
+		case scopes.LetBinding, scopes.RecAttr:
+		default:
+			return nil
+		}
+		searchRange, ok := scopes.BindingValueRange(tree, ref.Target)
+		if !ok {
+			return nil
+		}
+		matched := edgesInRange(edges, searchRange)
+		switch len(matched) {
+		case 1:
+			return h.crossFileAttr(ctx, matched[0], wanted)
+		case 0:
+			if r, ok := scopes.AttrsetValueResolve(tree, searchRange, wanted); ok {
+				return &Location{URI: uri, Range: toProtocolRange(r)}
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+
+	// An inline base such as `(import ./lib.nix)`: only a single import edge in
+	// its own range is followed; there is no local binding to search.
+	matched := edgesInRange(edges, base.Range())
+	if len(matched) == 1 {
+		return h.crossFileAttr(ctx, matched[0], wanted)
+	}
+	return nil
+}
+
+// inheritSelectDefinition resolves gd on an `inherit (import ./x.nix) name;`
+// attribute into the target file. It runs before scope-based definition so the
+// cross-file jump wins over the inherited name's self-definition. It fires only
+// when the inherit source range contains exactly one import edge.
+func (h *Handler) inheritSelectDefinition(ctx context.Context, fileID, uri string, pos syntax.Position) *Location {
+	tree, err := facts.ParseTree(ctx, h.memo, fileID)
+	if err != nil || tree == nil {
+		return nil
+	}
+	source, wanted, ok := inheritFromTargetAt(tree, pos)
+	if !ok {
+		return nil
+	}
+	edges, err := facts.ImportEdges(ctx, h.memo, fileID)
+	if err != nil {
+		return nil
+	}
+	matched := edgesInRange(edges, source.Range())
+	if len(matched) != 1 {
+		return nil
+	}
+	return h.crossFileAttr(ctx, matched[0], wanted)
+}
+
+// crossFileAttr loads the file targeted by edge and resolves wanted against its
+// top-level value, returning a location in that file or nil.
+func (h *Handler) crossFileAttr(ctx context.Context, edge imports.Edge, wanted []string) *Location {
+	if !edge.Exists || edge.TargetURI == "" {
+		return nil
+	}
+	tree, ok := h.parseTreeForPath(ctx, edge.TargetPath)
+	if !ok {
+		return nil
+	}
+	r, ok := scopes.ResolveAttrPath(tree, wanted)
+	if !ok {
+		return nil
+	}
+	return &Location{URI: edge.TargetURI, Range: toProtocolRange(r)}
+}
+
+// parseTreeForPath reads a (possibly unopen) file through the pinned VFS
+// snapshot, registers it on the memo engine, and returns its parse tree. It
+// mirrors fileInputForURI / workspaceSymbol so non-open import targets analyze
+// through the same cached path.
+func (h *Handler) parseTreeForPath(ctx context.Context, path string) (*syntax.Tree, bool) {
+	read, err := h.vfs.Snapshot().ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	fileID := facts.FileID(read.Path, read.Hash)
+	facts.SetFileInput(h.memo, fileID, facts.FileInput{Path: read.Path, Content: read.Content})
+	tree, err := facts.ParseTree(ctx, h.memo, fileID)
+	if err != nil || tree == nil {
+		return nil, false
+	}
+	return tree, true
+}
+
+// selectTargetAt finds the innermost select_expression whose attrpath contains
+// pos on a static identifier segment. It returns the (parenthesis-unwrapped)
+// base expression and the attribute segments up to and including the cursor
+// segment. ok is false when pos is not on such a segment or any segment in the
+// prefix is dynamic.
+func selectTargetAt(tree *syntax.Tree, pos syntax.Position) (base syntax.Node, wanted []string, ok bool) {
+	var bestRange syntax.Range
+	tree.Walk(func(node syntax.Node) bool {
+		if node.Kind() != "select_expression" {
+			return true
+		}
+		attrpath := node.ChildByFieldName("attrpath")
+		if attrpath.IsZero() || !rangeContainsPosition(attrpath.Range(), pos) {
+			return true
+		}
+		segs := attrpath.NamedChildren()
+		idx := -1
+		for i, seg := range segs {
+			if rangeContainsPosition(seg.Range(), pos) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return true
+		}
+		path := make([]string, 0, idx+1)
+		for i := 0; i <= idx; i++ {
+			if segs[i].Kind() != "identifier" {
+				return true
+			}
+			path = append(path, segs[i].Text())
+		}
+		r := node.Range()
+		if !ok || rangeInside(r, bestRange) {
+			base = unwrapParens(node.ChildByFieldName("expression"))
+			wanted = path
+			bestRange = r
+			ok = true
+		}
+		return true
+	})
+	if base.IsZero() {
+		ok = false
+	}
+	return base, wanted, ok
+}
+
+// inheritFromTargetAt finds an `inherit (e) a b;` entry whose attrs contain pos
+// on an identifier. It returns the source expression e and the single wanted
+// segment. ok is false when pos is not on such an identifier.
+func inheritFromTargetAt(tree *syntax.Tree, pos syntax.Position) (source syntax.Node, wanted []string, ok bool) {
+	tree.Walk(func(node syntax.Node) bool {
+		if ok {
+			return false
+		}
+		if node.Kind() != "inherit_from" {
+			return true
+		}
+		attrs := node.ChildByFieldName("attrs")
+		if attrs.IsZero() {
+			return true
+		}
+		for _, attr := range attrs.NamedChildren() {
+			if attr.Kind() != "identifier" || !rangeContainsPosition(attr.Range(), pos) {
+				continue
+			}
+			expr := node.ChildByFieldName("expression")
+			if expr.IsZero() {
+				return true
+			}
+			source = expr
+			wanted = []string{attr.Text()}
+			ok = true
+			return false
+		}
+		return true
+	})
+	return source, wanted, ok
+}
+
+// unwrapParens strips parenthesized_expression wrappers.
+func unwrapParens(node syntax.Node) syntax.Node {
+	for node.Kind() == "parenthesized_expression" {
+		next := node.ChildByFieldName("expression")
+		if next.IsZero() {
+			return node
+		}
+		node = next
+	}
+	return node
+}
+
+// edgesInRange returns the import edges whose range lies within outer.
+func edgesInRange(edges []imports.Edge, outer syntax.Range) []imports.Edge {
+	var matched []imports.Edge
+	for _, edge := range edges {
+		if rangeInside(edge.Range, outer) {
+			matched = append(matched, edge)
+		}
+	}
+	return matched
+}
+
+// rangeInside reports whether inner lies entirely within outer.
+func rangeInside(inner, outer syntax.Range) bool {
+	return !positionLess(inner.Start, outer.Start) && !positionLess(outer.End, inner.End)
 }
 
 // referencesAt returns the locations of every reference to the binding under

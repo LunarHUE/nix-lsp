@@ -22,8 +22,9 @@ go run ./cmd/nixls
 ## Testing in VS Code
 
 The server speaks LSP/JSON-RPC over stdio. It publishes diagnostics and answers
-within-file document symbols (outline), go-to-definition (which also jumps
-through import paths to other files), find-all-references, folding ranges,
+within-file document symbols (outline), go-to-definition (which also follows
+import paths and attribute selection into other files), find-all-references,
+folding ranges,
 document highlights, and workspace-wide symbol search. You can try it end-to-end
 in VS Code with the bundled development client under
 [editors/vscode](editors/vscode).
@@ -95,14 +96,22 @@ point it at the `nixls` binary, use **stdio** transport, and associate it with
 8. Put the cursor on an `import ./foo.nix` path (or a `./x.nix` inside
    `imports = [ ... ]` or after `callPackage`) and **Go to Definition** to jump
    to the top of the target file.
-9. Press `Ctrl+T` (Go to Symbol in Workspace) and type part of a name to search
+9. **Go to Definition** also follows attribute selection. Put the cursor on the
+   attribute part of `lib.foo` (where `let lib = import ./lib.nix`),
+   `(import ./lib.nix).foo`, a called import (`import ./x.nix { }`), or
+   `inherit (import ./lib.nix) foo` and jump straight to that attribute's
+   definition inside the target file; nested paths (`lib.a.b`) land on the right
+   binding. Selection into a local attribute set works too
+   (`let cfg = { port = 80; }; in cfg.port`). Dynamic (`${...}`) segments and
+   names provided by `with` are conservatively not followed.
+10. Press `Ctrl+T` (Go to Symbol in Workspace) and type part of a name to search
    let/rec/attribute bindings across every `.nix` file in the workspace.
-10. External changes refresh automatically: switch git branches, `git add` an
+11. External changes refresh automatically: switch git branches, `git add` an
     import target, or edit a `.nix` file outside the editor, and diagnostics
     update without reopening. This relies on the bundled client's file watcher
     (`**/*.nix`), which forwards changes as `workspace/didChangeWatchedFiles`;
     open editor buffers stay the source of truth for their own documents.
-11. On a large workspace, an "Indexing Nix workspace" progress indication shows
+12. On a large workspace, an "Indexing Nix workspace" progress indication shows
     in the status bar during startup while the server computes initial
     diagnostics for every file.
 
@@ -133,9 +142,15 @@ untracked) import target has no fix, since `git add` cannot conjure the file.
 - Automatic diagnostics refresh on external file changes and branch switches,
   driven by the bundled client's `**/*.nix` file watcher.
 
-References, highlights, and identifier go-to-definition are **within-file only**:
-a reference that resolves to a binding in another file is not followed yet. The
-one exception is import paths — go-to-definition on an `import`, `imports`, or
-`callPackage` path does cross files, jumping to the top of the target file.
+References and highlights are **within-file only**, and a bare identifier
+reference that resolves to a binding in another file is not followed yet.
+Go-to-definition does cross files in two cases: import paths (on an `import`,
+`imports`, or `callPackage` path it jumps to the top of the target file), and
+attribute selection through an import — `lib.foo`, `(import ./lib.nix).foo`,
+called imports (`import ./x.nix { }`), and `inherit (import ./x.nix) name` land
+on the attribute's definition in the target file (local attribute sets too).
+This selection support is deliberately conservative: dynamic (`${...}`) keys,
+names provided by `with`, and a base whose value has zero or multiple import
+edges are not followed, so it never guesses a wrong jump.
 `nixls` also does **not** yet provide completion or hover, and it uses
 **full-document** text sync (the whole document is resent on each change).
