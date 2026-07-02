@@ -346,6 +346,7 @@ type ServerCapabilities struct {
 	TextDocumentSync          int                    `json:"textDocumentSync,omitempty"`
 	DocumentSymbolProvider    bool                   `json:"documentSymbolProvider,omitempty"`
 	DefinitionProvider        bool                   `json:"definitionProvider,omitempty"`
+	HoverProvider             bool                   `json:"hoverProvider,omitempty"`
 	DocumentHighlightProvider bool                   `json:"documentHighlightProvider,omitempty"`
 	ReferencesProvider        bool                   `json:"referencesProvider,omitempty"`
 	FoldingRangeProvider      bool                   `json:"foldingRangeProvider,omitempty"`

@@ -25,7 +25,8 @@ The server speaks LSP/JSON-RPC over stdio. It publishes diagnostics and answers
 within-file document symbols (outline), go-to-definition (which also follows
 import paths and attribute selection into other files), find-all-references,
 folding ranges,
-document highlights, and workspace-wide symbol search. You can try it end-to-end
+document highlights, hover on flake inputs, and workspace-wide symbol search.
+You can try it end-to-end
 in VS Code with the bundled development client under
 [editors/vscode](editors/vscode).
 
@@ -106,6 +107,11 @@ point it at the `nixls` binary, use **stdio** transport, and associate it with
    names provided by `with` are conservatively not followed.
 10. Press `Ctrl+T` (Go to Symbol in Workspace) and type part of a name to search
    let/rec/attribute bindings across every `.nix` file in the workspace.
+10a. On the workspace root `flake.nix`, hover over an input name (or its `url`,
+    or a `follows` target) to see its declared url and, when a `flake.lock` is
+    present, its locked source, revision, and last-modified date.
+    **Go to Definition** on a `follows` target or an `outputs` formal jumps to
+    that input's declaration.
 11. External changes refresh automatically: switch git branches, `git add` an
     import target, or edit a `.nix` file outside the editor, and diagnostics
     update without reopening. This relies on the bundled client's file watcher
@@ -147,6 +153,9 @@ untracked) import target has no fix, since `git add` cannot conjure the file.
   `@`-pattern (so `self` and follows-referenced inputs are never flagged).
 - Document symbols (outline), go-to-definition, find-all-references, folding
   ranges, and document highlights.
+- Hover on the root `flake.nix` inputs (declared url plus locked source, rev,
+  and last-modified date from `flake.lock`), and go-to-definition on a `follows`
+  target or an `outputs` formal jumps to the input's declaration.
 - Workspace symbol search (`Ctrl+T`) over let/rec/attribute bindings in every
   `.nix` file (case-insensitive substring match, results capped at 128).
 - Automatic diagnostics refresh on external file changes and branch switches,
@@ -162,5 +171,6 @@ on the attribute's definition in the target file (local attribute sets too).
 This selection support is deliberately conservative: dynamic (`${...}`) keys,
 names provided by `with`, and a base whose value has zero or multiple import
 edges are not followed, so it never guesses a wrong jump.
-`nixls` also does **not** yet provide completion or hover, and it uses
+Hover is currently limited to the root `flake.nix` inputs; `nixls` does **not**
+yet provide completion or general expression hover, and it uses
 **full-document** text sync (the whole document is resent on each change).

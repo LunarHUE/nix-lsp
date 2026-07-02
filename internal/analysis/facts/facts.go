@@ -192,6 +192,27 @@ func FlakeModel(ctx context.Context, engine *memo.Engine, fileID string) (*flake
 	return model, nil
 }
 
+// FlakeLock reads and parses the current flake.lock input from the memo engine.
+// The lock input is a plain input key (raw bytes set via SetFlakeLock), so a
+// direct engine.Get returns the stored value without a query. Absent or
+// unparseable content yields (nil, false, nil), matching the tolerant parse the
+// diagnostics query uses. The returned *flake.Lock is immutable after parsing.
+func FlakeLock(ctx context.Context, engine *memo.Engine) (*flake.Lock, bool, error) {
+	value, err := engine.Get(ctx, FlakeLockKey())
+	if err != nil {
+		return nil, false, err
+	}
+	if value == nil {
+		return nil, false, nil
+	}
+	content, ok := value.([]byte)
+	if !ok {
+		return nil, false, fmt.Errorf("facts: FlakeLock returned %T", value)
+	}
+	lock, has := parseFlakeLock(content)
+	return lock, has, nil
+}
+
 func parseTree(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
 	input, err := getFileInput(ctx, q, key.ID)
 	if err != nil {

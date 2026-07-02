@@ -166,6 +166,15 @@ func (h *Handler) definition(ctx context.Context, params json.RawMessage) (any, 
 		return location, nil
 	}
 
+	// Flake-specific navigation (root flake.nix only): a follows target or an
+	// outputs formal jumps to the input declaration. It runs before scope
+	// resolution because an outputs formal is itself a scope binding that would
+	// otherwise resolve to its own name; every other position returns nil here
+	// and falls through to the normal chain.
+	if location := h.flakeDefinition(ctx, fileID, uri, pos); location != nil {
+		return location, nil
+	}
+
 	file, err := facts.Scopes(ctx, h.memo, fileID)
 	if err != nil || file == nil {
 		return nil, nil

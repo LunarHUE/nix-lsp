@@ -112,6 +112,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				TextDocumentSync:          1,
 				DocumentSymbolProvider:    true,
 				DefinitionProvider:        true,
+				HoverProvider:             true,
 				DocumentHighlightProvider: true,
 				ReferencesProvider:        true,
 				FoldingRangeProvider:      true,
@@ -133,6 +134,8 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		return h.documentSymbol(ctx, params)
 	case "textDocument/definition":
 		return h.definition(ctx, params)
+	case "textDocument/hover":
+		return h.hover(ctx, params)
 	case "textDocument/documentHighlight":
 		return h.documentHighlight(ctx, params)
 	case "textDocument/references":
