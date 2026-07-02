@@ -19,7 +19,11 @@ func FileDiagnostics(workspace project.Workspace, sourcePath string, tree *synta
 	if err != nil {
 		return nil, err
 	}
+	return ImportDiagnostics(workspace, edges), nil
+}
 
+// ImportDiagnostics converts import edges into user-facing diagnostics.
+func ImportDiagnostics(workspace project.Workspace, edges []importedges.Edge) []syntax.Diagnostic {
 	diagnostics := make([]syntax.Diagnostic, 0)
 	for _, edge := range edges {
 		if !edge.Exists {
@@ -36,7 +40,12 @@ func FileDiagnostics(workspace project.Workspace, sourcePath string, tree *synta
 			})
 		}
 	}
-	return diagnostics, nil
+	return diagnostics
+}
+
+// TrackedFiles returns a path-keyed set of git-tracked files in workspace.
+func TrackedFiles(workspace project.Workspace) map[string]bool {
+	return trackedFiles(workspace)
 }
 
 // WorkspaceDiagnostics returns static diagnostics for every readable workspace
