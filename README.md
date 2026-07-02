@@ -151,6 +151,13 @@ untracked) import target has no fix, since `git add` cannot conjure the file.
   run only when a parseable `flake.lock` is present, and `unused-input` fires
   only when `outputs` uses a strict destructured signature with no `...` and no
   `@`-pattern (so `self` and follows-referenced inputs are never flagged).
+- Edit-based quick fixes on the root `flake.nix`: an `unused-input` warning
+  offers **Remove input '&lt;name&gt;'** (deletes every binding that declares it)
+  and **Add '&lt;name&gt;' to outputs** (inserts it into the `outputs` formals),
+  and a `dangling-follows` error offers **Change follows target to '&lt;name&gt;'**
+  did-you-mean fixes for each declared input within edit distance 2 of the
+  misspelled target (preserving any nested path after the first `/`). Each fix
+  appears only where its own diagnostic does.
 - Document symbols (outline), go-to-definition, find-all-references, folding
   ranges, and document highlights.
 - Hover on the root `flake.nix` inputs (declared url plus locked source, rev,

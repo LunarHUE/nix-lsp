@@ -79,14 +79,26 @@ type Command struct {
 	Arguments []any  `json:"arguments,omitempty"`
 }
 
-// CodeAction is a single LSP code action. Here it is always a quick fix that
-// runs a client-executed command.
+// TextEdit is a single LSP text edit: replace Range with NewText.
+type TextEdit struct {
+	Range   protocolRange `json:"range"`
+	NewText string        `json:"newText"`
+}
+
+// WorkspaceEdit groups text edits per document URI.
+type WorkspaceEdit struct {
+	Changes map[string][]TextEdit `json:"changes"`
+}
+
+// CodeAction is a single LSP quick fix. It carries either a client-executed
+// Command (git-add) or a WorkspaceEdit (the flake edit-based fixes), never both.
 type CodeAction struct {
 	Title       string               `json:"title"`
 	Kind        string               `json:"kind,omitempty"`
 	Diagnostics []protocolDiagnostic `json:"diagnostics,omitempty"`
 	IsPreferred bool                 `json:"isPreferred,omitempty"`
 	Command     *Command             `json:"command,omitempty"`
+	Edit        *WorkspaceEdit       `json:"edit,omitempty"`
 }
 
 // SymbolInformation is the flat LSP workspace-symbol shape: a name, kind, and a
@@ -281,6 +293,10 @@ func (h *Handler) codeAction(ctx context.Context, params json.RawMessage) (any, 
 		}
 		actions = append(actions, h.gitAddCodeAction(ctx, fileID, workspace, edge))
 	}
+	// Root flake.nix edit-based quick fixes (remove/add input, follows did-you-mean)
+	// append to the same response; they gate on the root flake and their own
+	// diagnostics internally, so a non-flake file adds nothing here.
+	actions = append(actions, h.flakeCodeActions(ctx, fileID, decoded.TextDocument.URI, requested)...)
 	if len(actions) == 0 {
 		return nil, nil
 	}

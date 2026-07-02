@@ -30,6 +30,11 @@ type Input struct {
 	HasTopFollows   bool
 	Flake           *bool
 	Follows         []FollowsEdge
+	// BindingRanges is the CST range of every binding entry that contributed to
+	// this input: the whole top-level binding in the sugar form
+	// (`inputs.foo.url = ...;`), and the inner `foo = ...;` binding inside the
+	// inputs attrset in the nested form. Ranges include the trailing semicolon.
+	BindingRanges []syntax.Range
 }
 
 // FollowsEdge is a nested `inputs.<child>.follows = "<target>"` override on an
@@ -47,6 +52,11 @@ type Outputs struct {
 	FormalsRange syntax.Range
 	HasEllipsis  bool
 	HasAtPattern bool
+	// InsertAnchor is the position immediately after the last formal's range end,
+	// where `, <name>` can be inserted to add an input to the outputs formals.
+	// HasInsertAnchor is false when there are zero formals.
+	InsertAnchor    syntax.Position
+	HasInsertAnchor bool
 }
 
 // AnalyzeInputs extracts the inputs and outputs model from the top-level
@@ -83,7 +93,7 @@ func AnalyzeInputs(tree *syntax.Tree) *File {
 			if len(segs) == 1 {
 				collectNestedInputs(value, byName, file)
 			} else {
-				input := ensureInput(byName, file, segs[1], segNodes[1].Range())
+				input := ensureInput(byName, file, segs[1], segNodes[1].Range(), entry)
 				applyLeaves(input, segs[2:], value)
 			}
 		case "outputs":
@@ -110,7 +120,7 @@ func collectNestedInputs(value syntax.Node, byName map[string]*Input, file *File
 		if !ok || len(segs) == 0 {
 			continue
 		}
-		input := ensureInput(byName, file, segs[0], segNodes[0].Range())
+		input := ensureInput(byName, file, segs[0], segNodes[0].Range(), entry)
 		applyLeaves(input, segs[1:], entry.ChildByFieldName("expression"))
 	}
 }
@@ -181,6 +191,10 @@ func parseOutputs(value syntax.Node) *Outputs {
 	for _, child := range formals.NamedChildren() {
 		switch child.Kind() {
 		case "formal":
+			// Children iterate in source order, so the last formal seen is the
+			// source-last one; its range end is where `, <name>` inserts.
+			out.InsertAnchor = child.Range().End
+			out.HasInsertAnchor = true
 			name := child.ChildByFieldName("name")
 			if !name.IsZero() && name.Kind() == "identifier" {
 				if _, exists := out.Formals[name.Text()]; !exists {
@@ -194,13 +208,19 @@ func parseOutputs(value syntax.Node) *Outputs {
 	return out
 }
 
-func ensureInput(byName map[string]*Input, file *File, name string, nameRange syntax.Range) *Input {
-	if input, ok := byName[name]; ok {
-		return input
+// ensureInput returns the Input named name, creating it on first sight, and
+// records entry as one of the bindings that contributed to it (entry is the
+// whole binding node whose range covers the trailing semicolon).
+func ensureInput(byName map[string]*Input, file *File, name string, nameRange syntax.Range, entry syntax.Node) *Input {
+	input, ok := byName[name]
+	if !ok {
+		input = &Input{Name: name, NameRange: nameRange}
+		byName[name] = input
+		file.Inputs = append(file.Inputs, input)
 	}
-	input := &Input{Name: name, NameRange: nameRange}
-	byName[name] = input
-	file.Inputs = append(file.Inputs, input)
+	if !entry.IsZero() {
+		input.BindingRanges = append(input.BindingRanges, entry.Range())
+	}
 	return input
 }
 

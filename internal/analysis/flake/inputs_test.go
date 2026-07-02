@@ -257,6 +257,96 @@ func TestAnalyzeInputs(t *testing.T) {
 	}
 }
 
+func TestAnalyzeInputsBindingRanges(t *testing.T) {
+	t.Run("sugar form records whole top-level bindings", func(t *testing.T) {
+		src := "{\n" +
+			"  inputs.hm.url = \"github:x/hm\";\n" +
+			"  inputs.hm.flake = false;\n" +
+			"}\n"
+		f := analyze(t, src)
+		hm := inputByName(f, "hm")
+		if hm == nil {
+			t.Fatal("hm missing")
+		}
+		if len(hm.BindingRanges) != 2 {
+			t.Fatalf("BindingRanges = %d, want 2 (one per sugar binding)", len(hm.BindingRanges))
+		}
+		// Each binding range covers its own line including the trailing semicolon.
+		for i, want := range []string{
+			"inputs.hm.url = \"github:x/hm\";",
+			"inputs.hm.flake = false;",
+		} {
+			if got := textAt(src, hm.BindingRanges[i]); got != want {
+				t.Errorf("BindingRanges[%d] text = %q, want %q", i, got, want)
+			}
+		}
+	})
+
+	t.Run("nested form records inner bindings", func(t *testing.T) {
+		src := "{\n" +
+			"  inputs = { hm.url = \"github:x/hm\"; nixpkgs.url = \"u\"; };\n" +
+			"}\n"
+		f := analyze(t, src)
+		hm := inputByName(f, "hm")
+		if hm == nil || len(hm.BindingRanges) != 1 {
+			t.Fatalf("hm BindingRanges = %+v, want one", hm)
+		}
+		if got, want := textAt(src, hm.BindingRanges[0]), "hm.url = \"github:x/hm\";"; got != want {
+			t.Errorf("hm binding text = %q, want inner binding %q", got, want)
+		}
+	})
+}
+
+func TestAnalyzeInputsInsertAnchor(t *testing.T) {
+	src := `{ outputs = { self, nixpkgs }: {}; }`
+	f := analyze(t, src)
+	if f.Outputs == nil || !f.Outputs.HasInsertAnchor {
+		t.Fatalf("outputs = %+v, want an insert anchor", f.Outputs)
+	}
+	// The anchor sits immediately after the last formal (`nixpkgs`); inserting
+	// `, extra` there yields `{ self, nixpkgs, extra }`.
+	nixpkgs := f.Outputs.Formals["nixpkgs"]
+	if f.Outputs.InsertAnchor != nixpkgs.End {
+		t.Errorf("InsertAnchor = %+v, want end of last formal %+v", f.Outputs.InsertAnchor, nixpkgs.End)
+	}
+}
+
+func TestAnalyzeInputsInsertAnchorAbsentWithoutFormals(t *testing.T) {
+	f := analyze(t, `{ outputs = args: {}; }`)
+	if f.Outputs == nil {
+		t.Fatal("Outputs nil")
+	}
+	if f.Outputs.HasInsertAnchor {
+		t.Error("HasInsertAnchor = true, want false for a plain-arg outputs")
+	}
+}
+
+// textAt returns the source substring covered by an ASCII single-line range.
+func textAt(src string, r syntax.Range) string {
+	lines := splitLines(src)
+	if r.Start.Line != r.End.Line || r.Start.Line >= len(lines) {
+		return ""
+	}
+	line := lines[r.Start.Line]
+	if r.End.Character > len(line) {
+		return ""
+	}
+	return line[r.Start.Character:r.End.Character]
+}
+
+func splitLines(src string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(src); i++ {
+		if src[i] == '\n' {
+			lines = append(lines, src[start:i])
+			start = i + 1
+		}
+	}
+	lines = append(lines, src[start:])
+	return lines
+}
+
 func TestAnalyzeInputsNilTree(t *testing.T) {
 	f := AnalyzeInputs(nil)
 	if f == nil || f.HasInputs || len(f.Inputs) != 0 {
