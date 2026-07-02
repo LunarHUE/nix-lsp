@@ -24,7 +24,7 @@ Then point the extension at your built server: set `nixls.serverPath` (Settings
 
 | Where | Try | You should see |
 | --- | --- | --- |
-| `nixpkgs` name / `.url` / a `follows` target | Hover | locked source, 12-char rev, and last-modified date from `flake.lock` |
+| `nixpkgs` name / `.url` / a `follows` target | Hover | locked source, pinned `ref`, 12-char rev, and last-modified date from `flake.lock` |
 | `demo-lib` name | Hover | url plus `flake = false` |
 | `home-manager`'s `inputs.nixpkgs.follows = "nixpkgs"` target | Ctrl-click / Go to Definition | jumps to the `nixpkgs` input declaration |
 | `flake-utils`'s `follows = "nixpkgss"` (typo) | Look at the squiggle | `dangling-follows` error |
@@ -47,6 +47,7 @@ Then point the extension at your built server: set `nixls.serverPath` (Settings
 | `greet` in `lib.greet "world"` | Ctrl-click / Go to Definition | jumps into `lib.nix` at `greet` |
 | `import ./lib.nix` path | Go to Definition | jumps to the top of `lib.nix` |
 | `users`, `makeUser` | Find All References / Highlight | uses within the file |
+| any `let`-bound name at a use site | Hover | the source expression it is bound to (binding-value hover) |
 | anywhere | Open Outline / use folding | the nested `let`, function, list, and attrsets are structured |
 | anywhere | Ctrl+T (workspace symbols) | search bindings across `demo.nix` and `lib.nix` |
 
@@ -65,3 +66,9 @@ Palette. It re-reads `nixls.serverPath` and restarts the language server without
 reloading the window.
 
 Note: rename is **N/A** — cross-file rename is not implemented yet.
+
+### More features, other workspaces
+
+NixOS option hover, package version hover, and embedded-shell highlighting are
+demonstrated by the sibling example workspaces — see
+[`../README.md`](../README.md) for the folder-by-folder tour.
