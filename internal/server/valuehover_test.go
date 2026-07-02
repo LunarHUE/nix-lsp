@@ -4,6 +4,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/scopes"
+	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 )
 
 // valueHoverWorkspace writes src into a fresh workspace as mod.nix, initializes
@@ -189,19 +192,21 @@ func TestFormatValueFence(t *testing.T) {
 			want: `"x86_64-linux"`,
 		},
 		{
-			name: "dedents common indentation",
-			src:  "    a = 1;\n    b = 2;",
-			want: "a = 1;\nb = 2;",
+			// The extracted text's first line starts at the expression itself, so
+			// it stays put; the continuation lines dedent by their common indent.
+			name: "dedents continuation lines",
+			src:  "{\n    a = 1;\n    b = 2;\n  }",
+			want: "{\n  a = 1;\n  b = 2;\n}",
 		},
 		{
 			name: "preserves relative indentation",
-			src:  "  {\n    a = 1;\n  }",
-			want: "{\n  a = 1;\n}",
+			src:  "{\n    a = {\n      b = 1;\n    };\n  }",
+			want: "{\n  a = {\n    b = 1;\n  };\n}",
 		},
 		{
 			name: "ignores blank lines for indent",
-			src:  "  a\n\n  b",
-			want: "a\n\nb",
+			src:  "[\n    1\n\n    2\n  ]",
+			want: "[\n  1\n\n  2\n]",
 		},
 		{
 			name: "truncates past ten lines",
@@ -215,5 +220,168 @@ func TestFormatValueFence(t *testing.T) {
 				t.Errorf("formatValueFence(%q) =\n%q\nwant\n%q", tt.src, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIndentedStringContent(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "single content line",
+			src:  "''\n    echo hi\n  ''",
+			want: "echo hi",
+		},
+		{
+			name: "multi line keeps relative indent",
+			src:  "''\n    if true; then\n      echo hi\n    fi\n  ''",
+			want: "if true; then\n  echo hi\nfi",
+		},
+		{
+			name: "interior blank line survives",
+			src:  "''\n    a\n\n    b\n  ''",
+			want: "a\n\nb",
+		},
+		{
+			name: "inline content",
+			src:  "''echo hi''",
+			want: "echo hi",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := indentedStringContent(tt.src); got != tt.want {
+				t.Errorf("indentedStringContent(%q) =\n%q\nwant\n%q", tt.src, got, tt.want)
+			}
+		})
+	}
+}
+
+// renderFor parses src, analyzes its scopes, and renders the hover markdown for
+// the binding named name, exercising the pure render path directly.
+func renderFor(t *testing.T, src, name string) string {
+	t.Helper()
+	tree, err := syntax.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse error = %v", err)
+	}
+	file := scopes.Analyze(tree)
+	for _, b := range file.Bindings {
+		if b.Name == name {
+			return renderBindingHover(tree, b)
+		}
+	}
+	t.Fatalf("binding %q not found in %q", name, src)
+	return ""
+}
+
+func TestRenderBindingHoverIndentedStrings(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		binding string
+		want    []string
+		wantNot []string
+	}{
+		{
+			// A single-content-line indented string collapses to one line.
+			name:    "single line indented string collapses",
+			src:     "{ motd = ''\n    hello\n  ''; }",
+			binding: "motd",
+			want:    []string{"```nix", "''hello''"},
+			wantNot: []string{"```bash"},
+		},
+		{
+			// A script-carrying attribute renders content only, as bash.
+			name:    "shellHook renders bash content",
+			src:     "{ shellHook = ''\n    echo \"ready\"\n  ''; }",
+			binding: "shellHook",
+			want:    []string{"**shellHook** — attribute", "```bash\necho \"ready\"\n```"},
+			wantNot: []string{"''", "```nix"},
+		},
+		{
+			name:    "script multi line keeps relative indent",
+			src:     "{ script = ''\n    if ok; then\n      run\n    fi\n  ''; }",
+			binding: "script",
+			want:    []string{"```bash\nif ok; then\n  run\nfi\n```"},
+			wantNot: []string{"''"},
+		},
+		{
+			// A non-script attribute keeps the nix fence with the delimiters.
+			name:    "non-script multi line keeps nix fence",
+			src:     "{ motd = ''\n    line one\n    line two\n  ''; }",
+			binding: "motd",
+			want:    []string{"```nix", "''"},
+			wantNot: []string{"```bash"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderFor(t, tt.src, tt.binding)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("render missing %q:\n%s", want, got)
+				}
+			}
+			for _, not := range tt.wantNot {
+				if strings.Contains(got, not) {
+					t.Errorf("render unexpectedly contains %q:\n%s", not, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderBindingHoverBashFenceTruncates(t *testing.T) {
+	// A 12-content-line script: the bash fence keeps 10 lines plus an ellipsis.
+	var b strings.Builder
+	b.WriteString("{ preStart = ''\n")
+	for i := 0; i < 12; i++ {
+		b.WriteString("    echo ")
+		b.WriteByte(byte('a' + i))
+		b.WriteByte('\n')
+	}
+	b.WriteString("  ''; }")
+
+	got := renderFor(t, b.String(), "preStart")
+	if !strings.Contains(got, "```bash") {
+		t.Fatalf("render missing bash fence:\n%s", got)
+	}
+	if !strings.Contains(got, "echo j\n…") {
+		t.Errorf("render not truncated after ten lines:\n%s", got)
+	}
+	if strings.Contains(got, "echo k") {
+		t.Errorf("render kept lines beyond the limit:\n%s", got)
+	}
+}
+
+func TestHandlerValueHoverShellHookBashFence(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	// Mirrors the root flake's mkShell shape: shellHook bound to an indented
+	// string inside a nested attrset.
+	src := "{ pkgs }:\npkgs.mkShell {\n  shellHook = ''\n    echo \"Nix devShell ready. node $(node --version 2>/dev/null)\"\n  '';\n}\n"
+	uri := valueHoverWorkspace(t, handler, src)
+
+	line, char := posOf(t, src, "shellHook", 0)
+	hover := requestHover(t, handler, uri, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want shellHook bash-fence hover")
+	}
+	value := hover.Contents.Value
+	for _, want := range []string{
+		"**shellHook** — attribute",
+		"```bash",
+		"echo \"Nix devShell ready. node $(node --version 2>/dev/null)\"",
+	} {
+		if !strings.Contains(value, want) {
+			t.Errorf("hover value missing %q:\n%s", want, value)
+		}
+	}
+	if strings.Contains(value, "''") {
+		t.Errorf("hover value still contains indented-string delimiters:\n%s", value)
 	}
 }
