@@ -81,10 +81,55 @@ flake.nix only, commits `ffd61e2` → `204eadc`:
   cap 3, preserves /nested remainders). Actions gate on exact
   diagnostic code+range matches.
 
-Next: Phase 3 (package index) — nix runner pool, locked-rev package index,
-bbolt storage, `pkgs.` completion/hover. NOTE: introduces new external
-dependencies (bbolt) and executing the `nix` binary — confirm direction
-with the user before starting.
+## Next: Phase 3 (package index) — NOT STARTED, needs user sign-off
+
+Scope per docs/implementation-plan.md: nix runner pool (timeouts,
+cancellation, stderr classification, JSON parsing), package index keyed by
+the locked nixpkgs revision, sharded attr dump with tryEval armor, bbolt
+storage + in-memory trigram index, bundled bootstrap index, `pkgs.`
+completion/hover, unknown-package/alias/did-you-mean diagnostics.
+
+Why it needs sign-off before starting (was explicitly deferred to ask):
+- First external Go dependency (bbolt) — repo is stdlib-only today except
+  the vendored tree-sitter binding.
+- The server would start EXECUTING the `nix` binary (network, sandboxing,
+  failure modes) — a policy change from the pure-static server so far.
+- Bundled bootstrap index raises binary/repo size questions.
+
+Suggested slicing when approved:
+1. Runner pool alone (stdlib-only: exec nix with timeouts/cancel/stderr
+   classification; feature-flag off by default) — no deps, low risk.
+2. Attr dump + index model in memory (no bbolt yet), keyed by the locked
+   nixpkgs rev already available from flake.Lock.
+3. bbolt persistence + trigram search.
+4. `pkgs.` completion/hover + diagnostics wired through facts.
+Alternative lower-risk work: deferred Phase 1 items — persistent file
+facts (content-hash keyed), incremental reparse (Reparse API is ready).
+
+## How this session worked (repeat it)
+
+Per slice: Fable 5 wrote a detailed spec prompt (files to read in order,
+exact design, tests, gate commands, smoke-test script shape, hard
+constraints, DO-NOT-COMMIT) → Opus subagent implemented → Fable re-read
+every production diff line by line, re-ran the whole gate itself, then
+committed with explicit `git add <paths>` (NEVER -A) and a one-line
+message, no trailers. Agents verify grammar shapes empirically against
+third_party/tree-sitter-nix/src/node-types.json before coding. Smoke
+drivers live in the session scratchpad and are deleted after passing.
+Test coverage as of Phase 2 completion: 83.9% of statements (merged
+cross-package profile); only real gap is cmd/nixls main() (covered by
+smoke tests outside `go test`) and lsp error-response branches.
+
+## Root-flake feature gating (Phase 2 code map)
+
+All flake features live in internal/server/flake{hover,completion,
+actions}.go and gate through rootFlakeInputForURI/isRootFlakeURI
+(flakehover.go) — path must equal workspace.Root/flake.nix. The flake
+model comes from facts.FlakeModel(fileID); the parsed lock from
+facts.FlakeLock(ctx, engine) (engine.Get on the input key works because
+input entries are stored non-dirty). flakeDefinition runs BEFORE scope
+definitionAt in the definition chain (outputs formals self-resolve
+otherwise); inheritSelectDefinition still runs first overall.
 
 Phase-2 warts to remember:
 - The window/workDoneProgress/create request can theoretically hit the wire
