@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // Doc is the documentation for one package, reduced to the few fields hover
@@ -26,9 +28,14 @@ type Doc struct {
 }
 
 // Index is a lookup over parsed packages keyed by attribute path (the artifact's
-// own dotted keys, e.g. "python312Packages.requests", verbatim).
+// own dotted keys, e.g. "python312Packages.requests", verbatim). The sorted attr
+// slice backing Complete is built lazily on first use, so pure-hover callers that
+// only Lookup never pay to sort the (up to ~145k) keys.
 type Index struct {
 	docs map[string]*Doc
+
+	sortOnce sync.Once
+	sorted   []string // attrs in ascending order, populated by sortOnce
 }
 
 // rawPackage mirrors the on-disk shape of a single packages.json entry, decoding
@@ -190,6 +197,45 @@ func (ix *Index) Lookup(attr string) (*Doc, bool) {
 	}
 	doc, ok := ix.docs[attr]
 	return doc, ok
+}
+
+// Complete returns every package Doc whose Attr has the given prefix (a byte
+// prefix over the verbatim dotted keys, so "python312Packages." completes nested
+// attrs), sorted by Attr and capped at limit. A limit <= 0 returns nil. The
+// sorted attr slice is built once, lazily, on the first call; from there each
+// call binary-searches to the first candidate and scans forward. nil-receiver
+// safe.
+//
+// The full dotted Doc is returned rather than a trimmed next-segment: for the
+// "pkgs.python312Packages.<cursor>" case the server derives the completion label
+// and insertText by trimming the already-typed prefix off Attr, and it still
+// needs the Doc for the item's detail/documentation. See CompleteSegment note.
+func (ix *Index) Complete(prefix string, limit int) []*Doc {
+	if ix == nil || ix.docs == nil || limit <= 0 {
+		return nil
+	}
+	ix.sortOnce.Do(ix.buildSorted)
+
+	i := sort.SearchStrings(ix.sorted, prefix)
+	var out []*Doc
+	for ; i < len(ix.sorted) && len(out) < limit; i++ {
+		attr := ix.sorted[i]
+		if !strings.HasPrefix(attr, prefix) {
+			break
+		}
+		out = append(out, ix.docs[attr])
+	}
+	return out
+}
+
+// buildSorted materializes the ascending slice of attribute keys that Complete
+// binary-searches. It runs at most once per Index, under sortOnce.
+func (ix *Index) buildSorted() {
+	ix.sorted = make([]string, 0, len(ix.docs))
+	for attr := range ix.docs {
+		ix.sorted = append(ix.sorted, attr)
+	}
+	sort.Strings(ix.sorted)
 }
 
 // Len reports the number of packages held in the index.

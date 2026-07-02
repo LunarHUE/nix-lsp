@@ -199,6 +199,98 @@ func TestParseSkipsMalformedEntry(t *testing.T) {
 	}
 }
 
+func TestChildrenTopLevel(t *testing.T) {
+	ix := loadFixture(t)
+	children := ix.Children(nil)
+	var names []string
+	for _, c := range children {
+		names = append(names, c.Name)
+	}
+	want := []string{"boot", "environment", "networking", "nix", "services", "systemd", "time", "users"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("Children(nil) names = %v, want %v", names, want)
+	}
+	// Top-level groups are interior nodes: no Doc, deeper segments present.
+	for _, c := range children {
+		if c.Doc != nil {
+			t.Errorf("child %q Doc = %+v, want nil (group)", c.Name, c.Doc)
+		}
+		if !c.HasChildren {
+			t.Errorf("child %q HasChildren = false, want true (group)", c.Name)
+		}
+	}
+}
+
+func TestChildrenLeafOptions(t *testing.T) {
+	ix := loadFixture(t)
+	children := ix.Children([]string{"networking", "firewall"})
+	if len(children) != 2 {
+		t.Fatalf("Children(networking.firewall) = %d entries, want 2", len(children))
+	}
+	// Sorted by Name: allowedTCPPorts before enable.
+	if children[0].Name != "allowedTCPPorts" || children[1].Name != "enable" {
+		t.Fatalf("names = [%q %q], want [allowedTCPPorts enable]", children[0].Name, children[1].Name)
+	}
+	for _, c := range children {
+		if c.Doc == nil {
+			t.Errorf("child %q Doc = nil, want the leaf option doc", c.Name)
+		}
+		if c.HasChildren {
+			t.Errorf("child %q HasChildren = true, want false (leaf)", c.Name)
+		}
+	}
+}
+
+func TestChildrenThroughWildcard(t *testing.T) {
+	ix := loadFixture(t)
+	// A concrete instance segment descends through the <name> placeholder and
+	// returns ITS children, exactly as Lookup tolerates wildcards.
+	children := ix.Children([]string{"systemd", "services", "demo-web"})
+	var names []string
+	byName := map[string]Child{}
+	for _, c := range children {
+		names = append(names, c.Name)
+		byName[c.Name] = c
+	}
+	want := []string{"description", "serviceConfig"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("Children(systemd.services.demo-web) = %v, want %v", names, want)
+	}
+	if byName["description"].Doc == nil {
+		t.Error("description child Doc = nil, want the wildcard-instance doc")
+	}
+	if byName["description"].HasChildren {
+		t.Error("description HasChildren = true, want false")
+	}
+}
+
+func TestChildrenPlaceholderNotListed(t *testing.T) {
+	ix := loadFixture(t)
+	// systemd.services holds only a <name> child in the trie; a placeholder is
+	// not itself completable, so Children reports nothing.
+	if got := ix.Children([]string{"systemd", "services"}); got != nil {
+		t.Errorf("Children(systemd.services) = %v, want nil (only a <name> placeholder)", got)
+	}
+}
+
+func TestChildrenUnknownAndLeafPaths(t *testing.T) {
+	ix := loadFixture(t)
+	if got := ix.Children([]string{"no", "such", "group"}); got != nil {
+		t.Errorf("Children(unknown) = %v, want nil", got)
+	}
+	// A terminal leaf option has no children.
+	if got := ix.Children([]string{"networking", "firewall", "enable"}); got != nil {
+		t.Errorf("Children(leaf) = %v, want nil", got)
+	}
+}
+
+func TestChildrenNilReceiver(t *testing.T) {
+	var ix *Index
+	if got := ix.Children([]string{"networking"}); got != nil {
+		t.Errorf("nil.Children = %v, want nil", got)
+	}
+}
+
 func TestMarkdownGoldenWithExample(t *testing.T) {
 	ix := loadFixture(t)
 	doc, ok := ix.Lookup([]string{"networking", "firewall", "allowedTCPPorts"})

@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -115,6 +116,109 @@ func TestTrimmedRoundTrip(t *testing.T) {
 		if *a != *b {
 			t.Errorf("round-trip %q = %+v, want %+v", attr, *b, *a)
 		}
+	}
+}
+
+func attrsOf(docs []*Doc) []string {
+	out := make([]string, len(docs))
+	for i, d := range docs {
+		out[i] = d.Attr
+	}
+	return out
+}
+
+func TestCompletePrefix(t *testing.T) {
+	ix := loadFixture(t)
+	got := attrsOf(ix.Complete("cl", 10))
+	if len(got) != 1 || got[0] != "claude-code" {
+		t.Fatalf("Complete(cl) = %v, want [claude-code]", got)
+	}
+}
+
+func TestCompleteSortedCap(t *testing.T) {
+	ix := loadFixture(t)
+	// Fixture attrs sorted: claude-code, git, go, hello, htop, python312Packages.requests.
+	got := attrsOf(ix.Complete("", 3))
+	want := []string{"claude-code", "git", "go"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Complete(\"\",3) = %v, want %v (first 3 sorted)", got, want)
+	}
+}
+
+func TestCompleteMiss(t *testing.T) {
+	ix := loadFixture(t)
+	if got := ix.Complete("zzz", 10); got != nil {
+		t.Errorf("Complete(zzz) = %v, want nil", got)
+	}
+}
+
+func TestCompleteLimitZero(t *testing.T) {
+	ix := loadFixture(t)
+	if got := ix.Complete("c", 0); got != nil {
+		t.Errorf("Complete(c,0) = %v, want nil", got)
+	}
+	if got := ix.Complete("c", -1); got != nil {
+		t.Errorf("Complete(c,-1) = %v, want nil", got)
+	}
+}
+
+func TestCompleteFullAttrPrefix(t *testing.T) {
+	ix := loadFixture(t)
+	// A prefix equal to a whole attribute still matches that attribute.
+	got := attrsOf(ix.Complete("claude-code", 10))
+	if len(got) != 1 || got[0] != "claude-code" {
+		t.Fatalf("Complete(claude-code) = %v, want [claude-code]", got)
+	}
+}
+
+func TestCompleteDottedPrefix(t *testing.T) {
+	ix := loadFixture(t)
+	// A dotted prefix descends into a nested attribute namespace.
+	got := attrsOf(ix.Complete("python312Packages.", 10))
+	if len(got) != 1 || got[0] != "python312Packages.requests" {
+		t.Fatalf("Complete(python312Packages.) = %v, want [python312Packages.requests]", got)
+	}
+}
+
+func TestCompleteDeterministic(t *testing.T) {
+	ix := loadFixture(t)
+	a := attrsOf(ix.Complete("", 10))
+	b := attrsOf(ix.Complete("", 10))
+	if strings.Join(a, ",") != strings.Join(b, ",") {
+		t.Fatalf("Complete not deterministic:\n first: %v\nsecond: %v", a, b)
+	}
+}
+
+func TestCompleteNilReceiver(t *testing.T) {
+	var ix *Index
+	if got := ix.Complete("p", 10); got != nil {
+		t.Errorf("nil.Complete = %v, want nil", got)
+	}
+}
+
+func TestCompleteLargeIndex(t *testing.T) {
+	docs := make(map[string]*Doc, 10000)
+	for i := 0; i < 10000; i++ {
+		attr := fmt.Sprintf("pkg%05d", i)
+		docs[attr] = &Doc{Attr: attr}
+	}
+	ix := &Index{docs: docs}
+
+	got := attrsOf(ix.Complete("p", 50))
+	if len(got) != 50 {
+		t.Fatalf("Complete(p,50) returned %d, want 50", len(got))
+	}
+	// Deterministic ascending order: pkg00000..pkg00049.
+	for i, attr := range got {
+		want := fmt.Sprintf("pkg%05d", i)
+		if attr != want {
+			t.Fatalf("Complete(p,50)[%d] = %q, want %q", i, attr, want)
+		}
+	}
+	// A second call yields the identical slice contents.
+	again := attrsOf(ix.Complete("p", 50))
+	if strings.Join(got, ",") != strings.Join(again, ",") {
+		t.Fatal("Complete(p,50) not deterministic across calls")
 	}
 }
 

@@ -8,6 +8,7 @@ package options
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -145,6 +146,74 @@ func (ix *Index) LookupNearest(path []string) (*Doc, []string, bool) {
 		}
 	}
 	return nil, nil, false
+}
+
+// Child describes one completable child segment of an option group: one entry a
+// dot-triggered completion offers under a resolved option path.
+type Child struct {
+	Name        string // concrete segment name ("firewall", "enable")
+	Doc         *Doc   // non-nil when this child is itself a documented option (leaf)
+	HasChildren bool   // true when deeper segments exist under it
+}
+
+// Children lists the completable child segments of the option group reached by
+// descending path with the same wildcard tolerance as Lookup (exact, then
+// "<name>", then "*" at each level, backtracking on a dead end). An empty path
+// returns the top-level groups. The children are sorted by Name; a "<name>" or
+// "*" placeholder child is never listed itself, since a placeholder is not a
+// concrete completion. It returns nil when path does not reach a node or the
+// reached node has no concrete children. nil-receiver safe.
+func (ix *Index) Children(path []string) []Child {
+	if ix == nil || ix.root == nil {
+		return nil
+	}
+	n := descend(ix.root, path)
+	if n == nil || len(n.children) == 0 {
+		return nil
+	}
+	var out []Child
+	for name, child := range n.children {
+		if name == "<name>" || name == "*" {
+			continue
+		}
+		out = append(out, Child{
+			Name:        name,
+			Doc:         child.doc,
+			HasChildren: len(child.children) > 0,
+		})
+	}
+	slices.SortFunc(out, func(a, b Child) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return out
+}
+
+// descend walks the trie to the node at the end of path, using the same
+// exact/"<name>"/"*" priority and backtracking as lookup, but succeeding on any
+// reached node rather than only one that holds a Doc. It returns nil when no
+// branch consumes the whole path.
+func descend(n *node, path []string) *node {
+	if len(path) == 0 {
+		return n
+	}
+	seg := path[0]
+	keys := []string{seg}
+	if seg != "<name>" {
+		keys = append(keys, "<name>")
+	}
+	if seg != "*" {
+		keys = append(keys, "*")
+	}
+	for _, key := range keys {
+		child, ok := n.children[key]
+		if !ok {
+			continue
+		}
+		if reached := descend(child, path[1:]); reached != nil {
+			return reached
+		}
+	}
+	return nil
 }
 
 func lookup(n *node, path []string) (*Doc, bool) {
