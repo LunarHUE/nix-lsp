@@ -110,6 +110,9 @@ func (h *Handler) startPackagesAutoLoad() {
 // failure path logs one line and leaves the index unset.
 func (h *Handler) loadPackagesAuto(ctx context.Context) {
 	channel := h.optionsChannelFromLock(ctx)
+	// Record the channel so a published index can attribute its data. Only auto
+	// mode sets this; explicit-path loads leave it empty and append no provenance.
+	h.setPackagesChannel(channel)
 
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {

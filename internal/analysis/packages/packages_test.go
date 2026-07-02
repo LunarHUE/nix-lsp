@@ -22,9 +22,9 @@ func loadFixture(t *testing.T) *Index {
 
 func TestParseStreamCount(t *testing.T) {
 	ix := loadFixture(t)
-	// Five well-formed entries; the malformed "broken" entry is skipped.
-	if got := ix.Len(); got != 5 {
-		t.Fatalf("Len = %d, want 5", got)
+	// Six well-formed entries; the malformed "broken" entry is skipped.
+	if got := ix.Len(); got != 6 {
+		t.Fatalf("Len = %d, want 6", got)
 	}
 }
 

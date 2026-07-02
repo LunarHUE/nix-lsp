@@ -9,7 +9,7 @@ import (
 )
 
 // packagesFixturePath returns the absolute path to the RAW-shape packages.json
-// fixture (5 well-formed entries) used to load an index without networking.
+// fixture (6 well-formed entries) used to load an index without networking.
 func packagesFixturePath(t *testing.T) string {
 	t.Helper()
 	path, err := filepath.Abs(filepath.Join("..", "analysis", "packages", "testdata", "packages.fixture.json"))
@@ -48,8 +48,8 @@ func TestPackagesLoadFromFixture(t *testing.T) {
 	if index == nil {
 		t.Fatal("packagesSnapshot = nil, want loaded index")
 	}
-	if got := index.Len(); got != 5 {
-		t.Errorf("index.Len() = %d, want 5", got)
+	if got := index.Len(); got != 6 {
+		t.Errorf("index.Len() = %d, want 6", got)
 	}
 }
 
@@ -107,6 +107,123 @@ func TestHandlerHoverPackageOffReturnsNull(t *testing.T) {
 	line, char := posOf(t, pkgFixture, "claude-code", 0)
 	if hover := requestHover(t, handler, modURI, line, char+1); hover != nil {
 		t.Fatalf("hover with packagesPath \"off\" = %+v, want null", hover)
+	}
+}
+
+// withPkgsFixture supplies `go` through a `with pkgs;` scope rather than a
+// `pkgs.<attr>` select, exercising the bare-identifier package hover path.
+const withPkgsFixture = "{ pkgs, ... }: { corePackages = with pkgs; [ nodejs_22 go ]; }"
+
+func TestHandlerHoverWithPkgsBareIdent(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	root := t.TempDir()
+	modPath := filepath.Join(root, "home.nix")
+	writeFile(t, modPath, withPkgsFixture)
+	initWithPackages(t, handler, root, packagesFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, withPkgsFixture)
+
+	line, char := posOf(t, withPkgsFixture, "go", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want package-doc hover for `with pkgs;` go")
+	}
+	value := hover.Contents.Value
+	for _, want := range []string{"**go**", "1.26.4"} {
+		if !strings.Contains(value, want) {
+			t.Errorf("hover value missing %q:\n%s", want, value)
+		}
+	}
+	// Explicit-path mode records no channel, so no provenance line is appended.
+	if strings.Contains(value, "channel data") {
+		t.Errorf("explicit-path hover should not carry provenance:\n%s", value)
+	}
+	// The range spans exactly the hovered identifier.
+	if hover.Range.Start.Character != char || hover.Range.End.Character != char+len("go") {
+		t.Errorf("range = %d..%d, want %d..%d", hover.Range.Start.Character, hover.Range.End.Character, char, char+len("go"))
+	}
+}
+
+// TestHandlerHoverWithPkgsShadowedFallsThrough proves the hover order: a name
+// bound by a local `let` under `with pkgs;` resolves to that binding, so package
+// hover declines and binding-value hover answers instead.
+func TestHandlerHoverWithPkgsShadowedFallsThrough(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	const src = "{ pkgs, ... }: let go = 42; in { corePackages = with pkgs; [ go ]; }"
+	root := t.TempDir()
+	modPath := filepath.Join(root, "home.nix")
+	writeFile(t, modPath, src)
+	initWithPackages(t, handler, root, packagesFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, src)
+
+	// The body use of `go` is the second occurrence (the first is the let name).
+	line, char := posOf(t, src, "go", 1)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want binding-value hover for shadowed `go`")
+	}
+	value := hover.Contents.Value
+	if !strings.Contains(value, "let binding") {
+		t.Errorf("hover value missing \"let binding\" (fall-through failed):\n%s", value)
+	}
+	if strings.Contains(value, "1.26.4") {
+		t.Errorf("shadowed `go` must not claim the nixpkgs go version:\n%s", value)
+	}
+}
+
+// TestHandlerHoverBareIdentNoWithNull confirms a bare identifier with no
+// enclosing `with pkgs;` and no local binding yields null: package hover declines
+// and binding-value hover cannot resolve it.
+func TestHandlerHoverBareIdentNoWithNull(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	const src = "{ pkgs, ... }: { corePackages = [ go ]; }"
+	root := t.TempDir()
+	modPath := filepath.Join(root, "home.nix")
+	writeFile(t, modPath, src)
+	initWithPackages(t, handler, root, packagesFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, src)
+
+	line, char := posOf(t, src, "go", 0)
+	if hover := requestHover(t, handler, modURI, line, char+1); hover != nil {
+		t.Fatalf("hover on bare `go` outside `with pkgs;` = %+v, want null", hover)
+	}
+}
+
+// TestHandlerHoverPackageProvenanceLine asserts that when a channel is recorded
+// (as auto mode does), package hover appends the provenance line.
+func TestHandlerHoverPackageProvenanceLine(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	root := t.TempDir()
+	modPath := filepath.Join(root, "home.nix")
+	writeFile(t, modPath, withPkgsFixture)
+	initWithPackages(t, handler, root, packagesFixturePath(t))
+	// Simulate an auto-mode load having recorded the channel.
+	handler.setPackagesChannel("nixpkgs-unstable")
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, withPkgsFixture)
+
+	line, char := posOf(t, withPkgsFixture, "go", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want package-doc hover")
+	}
+	value := hover.Contents.Value
+	want := "*nixpkgs-unstable channel data — an overlay may change the actual version*"
+	if !strings.Contains(value, want) {
+		t.Errorf("hover value missing provenance line %q:\n%s", want, value)
+	}
+	if !strings.Contains(value, "1.26.4") {
+		t.Errorf("hover value missing version alongside provenance:\n%s", value)
 	}
 }
 

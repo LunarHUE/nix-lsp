@@ -27,6 +27,14 @@
         "description": "Distributed version control system"
       }
     },
+    "go": {
+      "name": "go-1.26.4",
+      "pname": "go",
+      "version": "1.26.4",
+      "meta": {
+        "description": "The Go Programming Language"
+      }
+    },
     "python312Packages.requests": {
       "name": "python3.12-requests-2.32.3",
       "pname": "python3.12-requests",

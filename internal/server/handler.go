@@ -71,6 +71,27 @@ type Handler struct {
 	// and optionsCtx (cancelled by Close).
 	packagesIndex atomic.Pointer[packages.Index]
 	packagesOnce  sync.Once
+	// packagesChannel names the channel an auto-mode load resolved the dataset
+	// from (e.g. "nixpkgs-unstable"). It is recorded only when auto mode publishes
+	// an index and drives package hover's provenance line; explicit-path and
+	// fixture loads leave it empty, so those hovers append no provenance. Guarded
+	// by mu.
+	packagesChannel string
+}
+
+// setPackagesChannel records the channel an auto-mode packages load resolved.
+func (h *Handler) setPackagesChannel(channel string) {
+	h.mu.Lock()
+	h.packagesChannel = channel
+	h.mu.Unlock()
+}
+
+// packagesChannelString returns the recorded auto-mode packages channel, or ""
+// when the dataset came from an explicit path or has not loaded.
+func (h *Handler) packagesChannelString() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.packagesChannel
 }
 
 // NewHandler creates a handler with empty in-memory state.
