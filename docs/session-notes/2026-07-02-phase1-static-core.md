@@ -5,11 +5,22 @@ State handoff for the next session. Read this before continuing work.
 ## Where the project stands
 
 Phase 0 (skeleton) and the foundations course-correction are complete. Phase 1
-(whole-workspace static core, `docs/implementation-plan.md`) is now ~80% done.
+(whole-workspace static core, `docs/implementation-plan.md`) is now feature
+complete; only the explicitly deferred items remain (persistent facts,
+incremental reparse). Phase 2 (flake intelligence) is next.
 
 Commits this session, newest first (all gate-verified: build, vet, test,
 test -race, plus a real-binary stdio smoke test per feature stage):
 
+- `567b32f` server: resolve definition through attribute selection across
+  imports (new pure CST helpers in scopes/attrnav.go; select/inherit-from
+  bases resolve through exactly one import edge, else null)
+- `b68858c` server: report indexing progress via work-done progress (lsp
+  layer gained server→client requests: Server.Call + response routing +
+  closePending on shutdown; handler gates on client window.workDoneProgress)
+- `0cbae06` server: add git-add quickfix for untracked flake imports
+  (diagnostics carry stable Code strings now; workspace/executeCommand
+  nix-lsp.gitAdd validates .nix-inside-root then reuses refreshWatchedFiles)
 - `904bad0` server: add workspace symbols and watched-file diagnostics refresh
 - `4c65ba8` server: add references, folding ranges, and import-path definition
 - `8153750` server: add document symbols, definition, and highlights
@@ -36,17 +47,24 @@ test -race, plus a real-binary stdio smoke test per feature stage):
 - VS Code dev client (`editors/vscode`) registers a `**/*.nix` watcher via
   `synchronize.fileEvents`. README "Testing in VS Code" is current.
 
-## Phase 1 remaining
+## Phase 1 remaining (deferred only)
 
-- Code action for the flake untracked-import trap (diagnostic exists; the
-  "run git add" quick fix does not). Recommended next slice.
-- Parse pool with LSP progress reporting during workspace discovery.
-- Persistent file facts keyed by content hash (was explicitly deferred).
-- Cross-file *identifier* definition (only import paths cross files today).
+- Persistent file facts keyed by content hash (explicitly deferred).
 - Incremental reparse (Reparse is API-stable but does a full parse).
 
-Then Phase 2: flake.lock parsing, input hover/navigation/completion,
-unused-input diagnostics.
+Everything else shipped: untracked-import quickfix, indexing progress,
+cross-file attribute definition. Next: Phase 2 — flake.lock parsing, input
+model (follows graph), input hover/navigation/completion, unused-input and
+dangling-follows diagnostics, add/remove/update-input code actions.
+
+Phase-2 warts to remember:
+- The window/workDoneProgress/create request can theoretically hit the wire
+  before the initialize response (discovery task races the response write).
+  VS Code tolerates it; degradation is graceful (progress skipped).
+- selectDefinition only follows a base that is a local let/rec binding or an
+  inline import; `with import ./x.nix; foo` is deliberately not followed.
+- Attrpath-sugar prefix (`{ a.b = 1; }`, cursor on `a` of `lib.a`) returns
+  null by design (path-is-prefix-of-binding is not resolved).
 
 ## Architecture facts the next session must know
 
