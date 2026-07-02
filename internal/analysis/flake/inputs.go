@@ -44,6 +44,7 @@ type FollowsEdge struct {
 type Outputs struct {
 	HasFormals   bool
 	Formals      map[string]syntax.Range
+	FormalsRange syntax.Range
 	HasEllipsis  bool
 	HasAtPattern bool
 }
@@ -175,6 +176,7 @@ func parseOutputs(value syntax.Node) *Outputs {
 		return out
 	}
 	out.HasFormals = true
+	out.FormalsRange = formals.Range()
 	out.HasAtPattern = !node.ChildByFieldName("universal").IsZero()
 	for _, child := range formals.NamedChildren() {
 		switch child.Kind() {

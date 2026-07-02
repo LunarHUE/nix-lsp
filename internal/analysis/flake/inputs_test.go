@@ -6,6 +6,14 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 )
 
+// posBefore reports whether a is strictly before b.
+func posBefore(a, b syntax.Position) bool {
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Character < b.Character
+}
+
 func analyze(t *testing.T, src string) *File {
 	t.Helper()
 	tree, err := syntax.Parse([]byte(src))
@@ -159,6 +167,19 @@ func TestAnalyzeInputs(t *testing.T) {
 			verify: func(t *testing.T, f *File) {
 				if f.Outputs == nil || !f.Outputs.HasFormals || f.Outputs.HasEllipsis {
 					t.Fatalf("outputs = %+v", f.Outputs)
+				}
+				// FormalsRange spans the whole `{ self, nixpkgs }` node, so it must
+				// enclose every individual formal's range.
+				fr := f.Outputs.FormalsRange
+				if fr == (syntax.Range{}) {
+					t.Fatal("FormalsRange = zero, want the formals node range")
+				}
+				nixpkgs, ok := f.Outputs.Formals["nixpkgs"]
+				if !ok {
+					t.Fatal("nixpkgs formal missing")
+				}
+				if posBefore(nixpkgs.Start, fr.Start) || posBefore(fr.End, nixpkgs.End) {
+					t.Errorf("FormalsRange %+v does not enclose nixpkgs formal %+v", fr, nixpkgs)
 				}
 			},
 		},

@@ -156,6 +156,8 @@ untracked) import target has no fix, since `git add` cannot conjure the file.
 - Hover on the root `flake.nix` inputs (declared url plus locked source, rev,
   and last-modified date from `flake.lock`), and go-to-definition on a `follows`
   target or an `outputs` formal jumps to the input's declaration.
+- Completion inside the root `flake.nix` for `follows` targets and `outputs`
+  formals (declared input names; `self` in formals) — nothing else completes yet.
 - Workspace symbol search (`Ctrl+T`) over let/rec/attribute bindings in every
   `.nix` file (case-insensitive substring match, results capped at 128).
 - Automatic diagnostics refresh on external file changes and branch switches,
@@ -171,6 +173,7 @@ on the attribute's definition in the target file (local attribute sets too).
 This selection support is deliberately conservative: dynamic (`${...}`) keys,
 names provided by `with`, and a base whose value has zero or multiple import
 edges are not followed, so it never guesses a wrong jump.
-Hover is currently limited to the root `flake.nix` inputs; `nixls` does **not**
-yet provide completion or general expression hover, and it uses
-**full-document** text sync (the whole document is resent on each change).
+Hover is currently limited to the root `flake.nix` inputs, and completion is
+limited to `follows` targets and `outputs` formals in the root `flake.nix`;
+`nixls` does **not** yet provide general expression completion or hover, and it
+uses **full-document** text sync (the whole document is resent on each change).

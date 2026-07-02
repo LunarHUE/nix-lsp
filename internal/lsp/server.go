@@ -353,12 +353,19 @@ type ServerCapabilities struct {
 	WorkspaceSymbolProvider   bool                   `json:"workspaceSymbolProvider,omitempty"`
 	CodeActionProvider        bool                   `json:"codeActionProvider,omitempty"`
 	ExecuteCommandProvider    *ExecuteCommandOptions `json:"executeCommandProvider,omitempty"`
+	CompletionProvider        *CompletionOptions     `json:"completionProvider,omitempty"`
 }
 
 // ExecuteCommandOptions advertises the workspace/executeCommand commands the
 // server understands.
 type ExecuteCommandOptions struct {
 	Commands []string `json:"commands"`
+}
+
+// CompletionOptions advertises textDocument/completion support and the
+// characters that trigger it.
+type CompletionOptions struct {
+	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
 }
 
 type ServerInfo struct {

@@ -126,6 +126,7 @@ func TestServerCapabilitiesSerializeFeatureProviders(t *testing.T) {
 		DocumentHighlightProvider: true,
 		CodeActionProvider:        true,
 		ExecuteCommandProvider:    &ExecuteCommandOptions{Commands: []string{"nix-lsp.gitAdd"}},
+		CompletionProvider:        &CompletionOptions{TriggerCharacters: []string{"\""}},
 	}
 	data, err := json.Marshal(caps)
 	if err != nil {
@@ -137,6 +138,7 @@ func TestServerCapabilitiesSerializeFeatureProviders(t *testing.T) {
 		`"documentHighlightProvider":true`,
 		`"codeActionProvider":true`,
 		`"executeCommandProvider":{"commands":["nix-lsp.gitAdd"]}`,
+		`"completionProvider":{"triggerCharacters":["\""]}`,
 	} {
 		if !strings.Contains(string(data), field) {
 			t.Errorf("capabilities JSON %s missing %s", data, field)
@@ -147,14 +149,20 @@ func TestServerCapabilitiesSerializeFeatureProviders(t *testing.T) {
 	if err := json.Unmarshal(data, &round); err != nil {
 		t.Fatalf("Unmarshal error = %v", err)
 	}
-	// ExecuteCommandProvider is a pointer, so compare it separately then clear it
-	// before the value comparison of the rest of the struct.
+	// ExecuteCommandProvider and CompletionProvider are pointers, so compare them
+	// separately then clear them before the value comparison of the rest.
 	if round.ExecuteCommandProvider == nil || len(round.ExecuteCommandProvider.Commands) != 1 ||
 		round.ExecuteCommandProvider.Commands[0] != "nix-lsp.gitAdd" {
 		t.Fatalf("round-trip executeCommandProvider = %+v, want commands [nix-lsp.gitAdd]", round.ExecuteCommandProvider)
 	}
+	if round.CompletionProvider == nil || len(round.CompletionProvider.TriggerCharacters) != 1 ||
+		round.CompletionProvider.TriggerCharacters[0] != "\"" {
+		t.Fatalf("round-trip completionProvider = %+v, want triggerCharacters [\"]", round.CompletionProvider)
+	}
 	round.ExecuteCommandProvider = nil
 	caps.ExecuteCommandProvider = nil
+	round.CompletionProvider = nil
+	caps.CompletionProvider = nil
 	if round != caps {
 		t.Fatalf("round-trip = %+v, want %+v", round, caps)
 	}
