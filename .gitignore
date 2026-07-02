@@ -1,0 +1,12 @@
+.DS_Store
+bin/
+dist/
+coverage.out
+*.test
+*.prof
+
+# Local editor and cache state
+.idea/
+.vscode/
+.direnv/
+.cache/
