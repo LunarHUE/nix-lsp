@@ -23,9 +23,10 @@ go run ./cmd/nixls
 
 The server speaks LSP/JSON-RPC over stdio. It publishes diagnostics and answers
 within-file document symbols (outline), go-to-definition (which also jumps
-through import paths to other files), find-all-references, folding ranges, and
-document highlights. You can try it end-to-end in VS Code with the bundled
-development client under [editors/vscode](editors/vscode).
+through import paths to other files), find-all-references, folding ranges,
+document highlights, and workspace-wide symbol search. You can try it end-to-end
+in VS Code with the bundled development client under
+[editors/vscode](editors/vscode).
 
 ### 1. Build the server
 
@@ -94,6 +95,13 @@ point it at the `nixls` binary, use **stdio** transport, and associate it with
 8. Put the cursor on an `import ./foo.nix` path (or a `./x.nix` inside
    `imports = [ ... ]` or after `callPackage`) and **Go to Definition** to jump
    to the top of the target file.
+9. Press `Ctrl+T` (Go to Symbol in Workspace) and type part of a name to search
+   let/rec/attribute bindings across every `.nix` file in the workspace.
+10. External changes refresh automatically: switch git branches, `git add` an
+    import target, or edit a `.nix` file outside the editor, and diagnostics
+    update without reopening. This relies on the bundled client's file watcher
+    (`**/*.nix`), which forwards changes as `workspace/didChangeWatchedFiles`;
+    open editor buffers stay the source of truth for their own documents.
 
 The same import checks fire for `imports = [ ./x.nix ]` and
 `callPackage ./x.nix` references. In a flake workspace under git, an import
@@ -112,6 +120,10 @@ git-tracked files, so run git add`.
   bad-`inherit` bindings (error).
 - Document symbols (outline), go-to-definition, find-all-references, folding
   ranges, and document highlights.
+- Workspace symbol search (`Ctrl+T`) over let/rec/attribute bindings in every
+  `.nix` file (case-insensitive substring match, results capped at 128).
+- Automatic diagnostics refresh on external file changes and branch switches,
+  driven by the bundled client's `**/*.nix` file watcher.
 
 References, highlights, and identifier go-to-definition are **within-file only**:
 a reference that resolves to a binding in another file is not followed yet. The

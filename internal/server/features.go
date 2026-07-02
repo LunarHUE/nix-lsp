@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/imports"
@@ -11,6 +12,11 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
+
+// workspaceSymbolCap bounds the number of symbols returned for one
+// workspace/symbol query; workspaces can be large and the client only shows a
+// handful at a time.
+const workspaceSymbolCap = 128
 
 // LSP SymbolKind values used for document symbols.
 const (
@@ -46,6 +52,18 @@ type referenceContext struct {
 
 type foldingRangeParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
+}
+
+type workspaceSymbolParams struct {
+	Query string `json:"query"`
+}
+
+// SymbolInformation is the flat LSP workspace-symbol shape: a name, kind, and a
+// single location.
+type SymbolInformation struct {
+	Name     string   `json:"name"`
+	Kind     int      `json:"kind"`
+	Location Location `json:"location"`
 }
 
 // FoldingRange is a single LSP folding range. The optional `kind` field is
@@ -163,6 +181,125 @@ func (h *Handler) foldingRange(ctx context.Context, params json.RawMessage) (any
 		return nil, nil
 	}
 	return foldingRanges(tree), nil
+}
+
+// workspaceSymbol answers workspace/symbol by scanning every file in the current
+// workspace through the pinned VFS snapshot and emitting one symbol per
+// let/rec/attr binding. It is a synchronous request over many files; the memo
+// engine caches scope analysis by (path, hash) so re-queries are cheap. The
+// handler mutex is held only to read workspace state, never while evaluating
+// memo queries.
+func (h *Handler) workspaceSymbol(ctx context.Context, params json.RawMessage) (any, error) {
+	var decoded workspaceSymbolParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return nil, nil
+	}
+
+	h.mu.RLock()
+	workspace := h.workspace
+	ok := h.workspaceOK
+	h.mu.RUnlock()
+	if !ok {
+		return []SymbolInformation{}, nil
+	}
+
+	snapshot := h.vfs.Snapshot()
+	query := strings.ToLower(decoded.Query)
+
+	symbols := make([]SymbolInformation, 0)
+	for _, file := range workspace.Files {
+		read, err := snapshot.ReadFile(file.Path)
+		if err != nil {
+			continue
+		}
+		fileID := facts.FileID(read.Path, read.Hash)
+		facts.SetFileInput(h.memo, fileID, facts.FileInput{Path: read.Path, Content: read.Content})
+		scopeFile, err := facts.Scopes(ctx, h.memo, fileID)
+		if err != nil || scopeFile == nil {
+			continue
+		}
+
+		symbols = append(symbols, fileWorkspaceSymbols(scopeFile, file.URI, query)...)
+		// Files are visited in sorted (URI) order and each file's symbols are
+		// range-sorted, so once we have a full page we can stop scanning.
+		if len(symbols) >= workspaceSymbolCap {
+			break
+		}
+	}
+
+	sort.SliceStable(symbols, func(i, j int) bool {
+		if symbols[i].Location.URI != symbols[j].Location.URI {
+			return symbols[i].Location.URI < symbols[j].Location.URI
+		}
+		return protocolRangeLess(symbols[i].Location.Range, symbols[j].Location.Range)
+	})
+	if len(symbols) > workspaceSymbolCap {
+		symbols = symbols[:workspaceSymbolCap]
+	}
+	return symbols, nil
+}
+
+// fileWorkspaceSymbols turns one file's scope bindings into workspace symbols,
+// keeping only let/rec/attr bindings whose name substring-matches lowerQuery
+// (case-insensitive; empty matches all). The result is sorted by name range.
+func fileWorkspaceSymbols(file *scopes.File, uri, lowerQuery string) []SymbolInformation {
+	var symbols []SymbolInformation
+	for _, binding := range file.Bindings {
+		if binding.Dynamic {
+			continue
+		}
+		kind, ok := workspaceSymbolKind(binding.Kind)
+		if !ok {
+			continue
+		}
+		name := binding.AttrPath
+		if name == "" {
+			name = binding.Name
+		}
+		if name == "" {
+			continue
+		}
+		if lowerQuery != "" && !strings.Contains(strings.ToLower(name), lowerQuery) {
+			continue
+		}
+		symbols = append(symbols, SymbolInformation{
+			Name:     name,
+			Kind:     kind,
+			Location: Location{URI: uri, Range: toProtocolRange(binding.NameRange)},
+		})
+	}
+	sort.SliceStable(symbols, func(i, j int) bool {
+		return protocolRangeLess(symbols[i].Location.Range, symbols[j].Location.Range)
+	})
+	return symbols
+}
+
+// workspaceSymbolKind maps a binding kind to an LSP SymbolKind, reporting
+// ok=false for kinds that are not workspace symbols (params, inherits,
+// builtins). Attribute and rec-attr keys are Fields; let bindings are Variables.
+func workspaceSymbolKind(kind scopes.BindingKind) (int, bool) {
+	switch kind {
+	case scopes.LetBinding:
+		return symbolKindVariable, true
+	case scopes.RecAttr, scopes.AttrBinding:
+		return symbolKindField, true
+	default:
+		return 0, false
+	}
+}
+
+// protocolRangeLess orders protocol ranges by start then end position.
+func protocolRangeLess(a, b protocolRange) bool {
+	if a.Start.Line != b.Start.Line {
+		return a.Start.Line < b.Start.Line
+	}
+	if a.Start.Character != b.Start.Character {
+		return a.Start.Character < b.Start.Character
+	}
+	if a.End.Line != b.End.Line {
+		return a.End.Line < b.End.Line
+	}
+	return a.End.Character < b.End.Character
 }
 
 // documentHighlight answers textDocument/documentHighlight using scope

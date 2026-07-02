@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
@@ -82,6 +84,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				DocumentHighlightProvider: true,
 				ReferencesProvider:        true,
 				FoldingRangeProvider:      true,
+				WorkspaceSymbolProvider:   true,
 			},
 			ServerInfo: &lsp.ServerInfo{
 				Name: "nix-lsp",
@@ -103,7 +106,11 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		return h.references(ctx, params)
 	case "textDocument/foldingRange":
 		return h.foldingRange(ctx, params)
-	case "textDocument/didSave", "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles":
+	case "workspace/symbol":
+		return h.workspaceSymbol(ctx, params)
+	case "workspace/didChangeWatchedFiles":
+		return nil, h.didChangeWatchedFiles(params)
+	case "textDocument/didSave", "workspace/didChangeConfiguration":
 		return nil, nil
 	default:
 		return nil, &lsp.ResponseError{Code: errMethodNotFound, Message: fmt.Sprintf("method not found: %s", method)}
@@ -240,17 +247,144 @@ func (h *Handler) didClose(params json.RawMessage) error {
 		return err
 	}
 
+	h.publishEmptyDiagnostics(decoded.TextDocument.URI)
+	return nil
+}
+
+// publishEmptyDiagnostics clears the diagnostics for uri under a fresh
+// generation, so a stale set (from a closed or deleted file) cannot linger. It
+// takes the same generation-guarded path the compute flow uses, so an in-flight
+// older-generation compute for the same uri cannot resurrect the cleared set.
+func (h *Handler) publishEmptyDiagnostics(uri string) {
 	generation := h.nextGeneration()
 	h.mu.Lock()
-	delete(h.diagnostics, decoded.TextDocument.URI)
-	h.diagGeneration[decoded.TextDocument.URI] = generation
+	delete(h.diagnostics, uri)
+	h.diagGeneration[uri] = generation
 	h.mu.Unlock()
 	h.publisher.Publish(diagnosticUpdate{
-		URI:        decoded.TextDocument.URI,
+		URI:        uri,
 		Generation: generation,
 		Debounce:   false,
 	})
+}
+
+// watchedFileChange is one relevant on-disk change from a
+// workspace/didChangeWatchedFiles notification: a non-open .nix file that was
+// created, changed, or deleted.
+type watchedFileChange struct {
+	uri     string
+	path    string
+	deleted bool
+}
+
+const (
+	fileChangeTypeDeleted = 3
+)
+
+// didChangeWatchedFiles reacts to external filesystem changes (branch switches,
+// git operations, out-of-editor edits). Open buffers are ignored: the editor
+// buffer is the source of truth for an open document, and didOpen/didChange
+// already drive its diagnostics. Everything else is handled off the notification
+// thread by a single background task per notification so a large batch (a branch
+// switch touching many files) re-discovers the workspace only once.
+func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
+	var decoded didChangeWatchedFilesParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return fmt.Errorf("decode didChangeWatchedFiles params: %w", err)
+	}
+	if len(decoded.Changes) == 0 {
+		return nil
+	}
+
+	snapshot := h.vfs.Snapshot()
+	changes := make([]watchedFileChange, 0, len(decoded.Changes))
+	for _, change := range decoded.Changes {
+		path, err := vfs.URIToPath(change.URI)
+		if err != nil {
+			continue
+		}
+		if filepath.Ext(path) != ".nix" {
+			continue
+		}
+		// An open buffer overrides disk; its diagnostics are the editor's, not the
+		// filesystem's. Skip it so an external write cannot clobber the buffer.
+		if open, err := snapshot.HasOverlay(path); err != nil || open {
+			continue
+		}
+		changes = append(changes, watchedFileChange{
+			uri:     change.URI,
+			path:    path,
+			deleted: change.Type == fileChangeTypeDeleted,
+		})
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+
+	h.mu.RLock()
+	root := h.workspace.Root
+	h.mu.RUnlock()
+
+	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+		return h.refreshWatchedFiles(ctx, root, changes)
+	})
 	return nil
+}
+
+// refreshWatchedFiles re-discovers the workspace once, then recomputes
+// diagnostics for the changed files and the currently-open files. It reuses the
+// same generation-guarded computeFileDiagnostics/publishEmptyDiagnostics path as
+// didOpen/didChange/didClose, so ordering against concurrent edits stays sound.
+func (h *Handler) refreshWatchedFiles(ctx context.Context, root string, changes []watchedFileChange) error {
+	// Re-discover once so the file list and git-tracked set reflect disk. A
+	// changed git-tracked set alters untracked-import warnings in other files.
+	if root != "" {
+		if workspace, err := project.Discover(root); err == nil {
+			h.mu.Lock()
+			h.workspace = workspace
+			h.workspaceOK = true
+			h.workspaceErr = nil
+			h.mu.Unlock()
+			facts.SetWorkspace(h.memo, workspace)
+		}
+	}
+
+	// Pin a snapshot after re-discovery so changed files read their new disk
+	// content and open files read their current buffers.
+	snapshot := h.vfs.Snapshot()
+
+	for _, change := range changes {
+		if change.deleted {
+			// Mirror didClose: clear squiggles for a file that no longer exists.
+			h.publishEmptyDiagnostics(change.uri)
+			continue
+		}
+		_ = h.computeFileDiagnostics(ctx, snapshot, change.uri, change.path, h.nextGeneration(), false)
+	}
+
+	// Recomputing every workspace file after a tracked-set change is unbounded.
+	// Open files are few, so refresh them to pick up untracked-import warnings
+	// that changed elsewhere while staying bounded.
+	for _, open := range openFiles(snapshot) {
+		_ = h.computeFileDiagnostics(ctx, snapshot, open.uri, open.path, h.nextGeneration(), true)
+	}
+	return nil
+}
+
+// openFiles returns the open buffers in snapshot as watchedFileChange values
+// (uri + path), sorted by path for deterministic processing.
+func openFiles(snapshot *vfs.Snapshot) []watchedFileChange {
+	paths := snapshot.OverlayPaths()
+	sort.Strings(paths)
+	files := make([]watchedFileChange, 0, len(paths))
+	for _, path := range paths {
+		uri, err := vfs.PathToURI(path)
+		if err != nil {
+			continue
+		}
+		files = append(files, watchedFileChange{uri: uri, path: path})
+	}
+	return files
 }
 
 func (h *Handler) scheduleFileDiagnostics(uri string, path string, debounce bool) {
@@ -346,6 +480,16 @@ type textDocumentContentChangeEvent struct {
 
 type didCloseTextDocumentParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
+}
+
+type didChangeWatchedFilesParams struct {
+	Changes []fileEvent `json:"changes"`
+}
+
+type fileEvent struct {
+	URI  string `json:"uri"`
+	// Type is the LSP FileChangeType: 1=Created, 2=Changed, 3=Deleted.
+	Type int `json:"type"`
 }
 
 type publishDiagnosticsParams struct {

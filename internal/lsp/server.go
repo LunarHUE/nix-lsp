@@ -245,6 +245,7 @@ type ServerCapabilities struct {
 	DocumentHighlightProvider bool `json:"documentHighlightProvider,omitempty"`
 	ReferencesProvider        bool `json:"referencesProvider,omitempty"`
 	FoldingRangeProvider      bool `json:"foldingRangeProvider,omitempty"`
+	WorkspaceSymbolProvider   bool `json:"workspaceSymbolProvider,omitempty"`
 }
 
 type ServerInfo struct {

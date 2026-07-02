@@ -146,6 +146,19 @@ func (s *Snapshot) Generation() uint64 {
 	return s.generation
 }
 
+// OverlayPaths returns the normalized paths of every open buffer in this
+// snapshot. The order is unspecified; callers that need determinism must sort.
+func (s *Snapshot) OverlayPaths() []string {
+	if s == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(s.overlays))
+	for path := range s.overlays {
+		paths = append(paths, path)
+	}
+	return paths
+}
+
 // HasOverlay reports whether this snapshot contains an open buffer for path.
 func (s *Snapshot) HasOverlay(path string) (bool, error) {
 	if s == nil {

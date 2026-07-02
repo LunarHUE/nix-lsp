@@ -27,6 +27,12 @@ export function activate(context: vscode.ExtensionContext): void {
       { scheme: "file", language: "nix" },
       { scheme: "untitled", language: "nix" },
     ],
+    // Watch every .nix file so external changes (branch switches, git
+    // operations, out-of-editor edits) reach the server as
+    // workspace/didChangeWatchedFiles and refresh diagnostics.
+    synchronize: {
+      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.nix"),
+    },
   };
 
   client = new LanguageClient(
