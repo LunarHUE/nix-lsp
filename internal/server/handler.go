@@ -168,7 +168,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				WorkspaceSymbolProvider:   true,
 				CodeActionProvider:        true,
 				ExecuteCommandProvider:    &lsp.ExecuteCommandOptions{Commands: []string{commandGitAdd}},
-				CompletionProvider:        &lsp.CompletionOptions{TriggerCharacters: []string{"\""}},
+				CompletionProvider:        &lsp.CompletionOptions{TriggerCharacters: []string{"\"", "."}},
 			},
 			ServerInfo: &lsp.ServerInfo{
 				Name: "nix-lsp",

@@ -1,5 +1,7 @@
 package packages
 
+import "sort"
+
 // wellknown.go holds a small curated table of stable nixpkgs attributes that are
 // not derivations — aliases, function libraries, builders, and fetchers — and so
 // never appear in the channel packages.json artifact. The server consults it only
@@ -47,4 +49,16 @@ func Wellknown(attr string) (*Doc, bool) {
 		return nil, false
 	}
 	return &Doc{Attr: attr, Description: desc}, true
+}
+
+// WellknownNames returns the curated well-known attribute names in ascending
+// order, so bare-name completion under `with pkgs;` can offer those whose name
+// carries the typed prefix. It allocates a fresh slice on each call.
+func WellknownNames() []string {
+	names := make([]string, 0, len(wellknownDescriptions))
+	for name := range wellknownDescriptions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

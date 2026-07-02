@@ -29,8 +29,8 @@ func TestHandlerInitializeAdvertisesCompletionCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal capabilities error = %v", err)
 	}
-	if !strings.Contains(string(data), `"completionProvider":{"triggerCharacters":["\""]}`) {
-		t.Errorf("serialized capabilities = %s, want completionProvider triggerCharacters [\"]", data)
+	if !strings.Contains(string(data), `"completionProvider":{"triggerCharacters":["\"","."]}`) {
+		t.Errorf("serialized capabilities = %s, want completionProvider triggerCharacters [\" .]", data)
 	}
 }
 

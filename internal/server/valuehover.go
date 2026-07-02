@@ -92,20 +92,36 @@ func wrapValueHover(markdown string, r syntax.Range) *Hover {
 // its default when it has one, and an inherited name shows only its label.
 func renderBindingHover(tree *syntax.Tree, b *scopes.Binding) string {
 	switch b.Kind {
-	case scopes.LetBinding:
-		return renderBindingValue(b.Name, "let binding", tree, b)
-	case scopes.RecAttr, scopes.AttrBinding:
-		return renderBindingValue(b.Name, "attribute", tree, b)
+	case scopes.LetBinding, scopes.RecAttr, scopes.AttrBinding:
+		return renderBindingValue(b.Name, bindingKindLabel(b.Kind), tree, b)
 	case scopes.Param, scopes.AtPattern:
-		return valueHoverHeader(b.Name, "function parameter")
+		return valueHoverHeader(b.Name, bindingKindLabel(b.Kind))
 	case scopes.FormalParam:
-		header := valueHoverHeader(b.Name, "function parameter")
+		header := valueHoverHeader(b.Name, bindingKindLabel(b.Kind))
 		if def, ok := scopes.FormalDefaultSource(tree, b); ok {
 			return header + "\n\n" + nixFence(def)
 		}
 		return header
 	case scopes.InheritEntry:
-		return valueHoverHeader(b.Name, "inherited")
+		return valueHoverHeader(b.Name, bindingKindLabel(b.Kind))
+	default:
+		return ""
+	}
+}
+
+// bindingKindLabel returns the human label a value hover and a local-name
+// completion share for a binding kind. It returns "" for kinds with no meaningful
+// label (only Builtin, which neither caller renders).
+func bindingKindLabel(k scopes.BindingKind) string {
+	switch k {
+	case scopes.LetBinding:
+		return "let binding"
+	case scopes.RecAttr, scopes.AttrBinding:
+		return "attribute"
+	case scopes.Param, scopes.AtPattern, scopes.FormalParam:
+		return "function parameter"
+	case scopes.InheritEntry:
+		return "inherited"
 	default:
 		return ""
 	}

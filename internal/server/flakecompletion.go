@@ -10,36 +10,73 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 )
 
-// completionItemKindVariable is the LSP CompletionItemKind for a variable, used
-// for every flake input-name completion.
-const completionItemKindVariable = 6
+// LSP CompletionItemKind values used across the completion handlers.
+const (
+	// completionItemKindFunction marks a well-known nixpkgs helper (mkShell, ...).
+	completionItemKindFunction = 3
+	// completionItemKindField marks a leaf option or a full package attribute.
+	completionItemKindField = 5
+	// completionItemKindVariable is used for every flake input-name completion and
+	// for lexically visible local names.
+	completionItemKindVariable = 6
+	// completionItemKindModule marks an option group or an intermediate package
+	// attribute segment (one that has deeper attributes under it).
+	completionItemKindModule = 9
+)
 
-// CompletionItem is one LSP completion candidate.
+// CompletionItem is one LSP completion candidate. Flake input-name completions
+// set only Label/Kind/Detail; the dataset- and scope-aware completions also set a
+// TextEdit (so a partially typed segment is replaced rather than appended),
+// optional Documentation, and SortText.
 type CompletionItem struct {
-	Label  string `json:"label"`
-	Kind   int    `json:"kind,omitempty"`
-	Detail string `json:"detail,omitempty"`
+	Label         string         `json:"label"`
+	Kind          int            `json:"kind,omitempty"`
+	Detail        string         `json:"detail,omitempty"`
+	Documentation *MarkupContent `json:"documentation,omitempty"`
+	TextEdit      *TextEditItem  `json:"textEdit,omitempty"`
+	SortText      string         `json:"sortText,omitempty"`
 }
 
-// completion answers textDocument/completion. It offers declared input names
-// only in the workspace root flake.nix, and only inside a follows target string
-// or the outputs formals; every other file or position returns null.
+// TextEditItem is an LSP TextEdit: the range to replace and the text to insert.
+type TextEditItem struct {
+	Range   protocolRange `json:"range"`
+	NewText string        `json:"newText"`
+}
+
+// CompletionList is the LSP CompletionList result. The dataset-aware handlers
+// return it (LSP accepts either a bare item array or a list); flake completions
+// keep returning the bare []CompletionItem for exact behavioral parity.
+type CompletionList struct {
+	IsIncomplete bool             `json:"isIncomplete"`
+	Items        []CompletionItem `json:"items"`
+}
+
+// completion answers textDocument/completion. In the workspace root flake.nix it
+// first offers declared input names inside a follows target string or the outputs
+// formals, exactly as before. When that does not apply, any workspace .nix file
+// falls through to dataset- and scope-aware contextual completion (option paths,
+// nixpkgs attributes, with-pkgs names, and lexically visible local names). Every
+// position that matches nothing returns null.
 func (h *Handler) completion(ctx context.Context, params json.RawMessage) (any, error) {
 	var decoded textDocumentPositionParams
 	if err := json.Unmarshal(params, &decoded); err != nil {
 		return nil, nil
 	}
-	fileID, ok := h.rootFlakeInputForURI(decoded.TextDocument.URI)
-	if !ok {
-		return nil, nil
-	}
-	model, err := facts.FlakeModel(ctx, h.memo, fileID)
-	if err != nil || model == nil {
-		return nil, nil
-	}
 	pos := syntax.Position{Line: decoded.Position.Line, Character: decoded.Position.Character}
-	if items := flakeCompletionAt(model, pos); len(items) > 0 {
-		return items, nil
+
+	// Root flake.nix flake completions win when they apply; their behavior and
+	// priority are unchanged, so a follows/formals position never reaches the
+	// contextual path below.
+	if fileID, ok := h.rootFlakeInputForURI(decoded.TextDocument.URI); ok {
+		if model, err := facts.FlakeModel(ctx, h.memo, fileID); err == nil && model != nil {
+			if items := flakeCompletionAt(model, pos); len(items) > 0 {
+				return items, nil
+			}
+		}
+	}
+
+	if list := h.contextCompletion(ctx, decoded.TextDocument.URI, pos); list != nil {
+		return list, nil
 	}
 	return nil, nil
 }

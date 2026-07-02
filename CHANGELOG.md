@@ -5,6 +5,19 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ## Unreleased
 
+### Added — 2026-07-02 (evening)
+
+- **Dot-triggered completion everywhere**: typing `.` (or invoking completion)
+  now completes NixOS option paths (`networking.<cursor>` offers `firewall`
+  with type and docs; works through submodule instances like
+  `systemd.services.myservice.<cursor>`), nixpkgs attributes (`pkgs.cl<cursor>`
+  offers `claude-code` with its version; namespaces like `python312Packages`
+  collapse to a single group entry), bare names under `with pkgs;` (after two
+  typed characters, curated helpers like `mkShell` included), and lexically
+  visible local bindings — all working on mid-edit, syntactically incomplete
+  code. Flake input completion (follows targets, outputs formals) keeps its
+  existing behavior and priority.
+
 ### Added — 2026-07-02
 
 - **NixOS option hover**: hovering an option attrpath (flat, nested, or read via
