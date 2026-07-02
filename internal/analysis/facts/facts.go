@@ -22,10 +22,24 @@ const (
 
 const workspaceInputID = "current"
 
-// FileInput is the content and path data for one file hash.
+// fileIDSeparator joins a file's path and content hash into a single memo key
+// ID. Path is a genuine input to path-dependent queries (relative import
+// resolution), so two files with identical content but different paths must not
+// share one entry. The NUL byte cannot appear in a filesystem path, so the
+// split is unambiguous.
+const fileIDSeparator = "\x00"
+
+// FileInput is the content and path data for one file identity.
 type FileInput struct {
 	Path    string
 	Content []byte
+}
+
+// FileID returns the composite memo key ID for a file at path with the given
+// content hash. All file-derived queries key on this so that identical content
+// at different paths stays distinct.
+func FileID(path, hash string) string {
+	return path + fileIDSeparator + hash
 }
 
 // Register installs the production analysis queries.
@@ -40,10 +54,11 @@ func SetWorkspace(engine *memo.Engine, workspace project.Workspace) {
 	engine.SetInput(WorkspaceKey(), workspace)
 }
 
-// SetFileInput stores the current file input for hash.
-func SetFileInput(engine *memo.Engine, fileHash string, input FileInput) {
+// SetFileInput stores the current file input for fileID. fileID must be a
+// composite produced by FileID(path, hash).
+func SetFileInput(engine *memo.Engine, fileID string, input FileInput) {
 	input.Content = cloneBytes(input.Content)
-	engine.SetInput(FileInputKey(fileHash), input)
+	engine.SetInput(FileInputKey(fileID), input)
 }
 
 // WorkspaceKey returns the current workspace input key.
@@ -51,29 +66,30 @@ func WorkspaceKey() memo.Key {
 	return memo.Key{Kind: QueryWorkspace, ID: workspaceInputID}
 }
 
-// FileInputKey returns the file input key for fileHash.
-func FileInputKey(fileHash string) memo.Key {
-	return memo.Key{Kind: QueryFileInput, ID: fileHash}
+// FileInputKey returns the file input key for fileID.
+func FileInputKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryFileInput, ID: fileID}
 }
 
-// ParseTreeKey returns the parse tree query key for fileHash.
-func ParseTreeKey(fileHash string) memo.Key {
-	return memo.Key{Kind: QueryParseTree, ID: fileHash}
+// ParseTreeKey returns the parse tree query key for fileID.
+func ParseTreeKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryParseTree, ID: fileID}
 }
 
-// ImportEdgesKey returns the import edge query key for fileHash.
-func ImportEdgesKey(fileHash string) memo.Key {
-	return memo.Key{Kind: QueryImportEdges, ID: fileHash}
+// ImportEdgesKey returns the import edge query key for fileID.
+func ImportEdgesKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryImportEdges, ID: fileID}
 }
 
-// FileDiagnosticsKey returns the diagnostics query key for fileHash.
-func FileDiagnosticsKey(fileHash string) memo.Key {
-	return memo.Key{Kind: QueryFileDiagnostics, ID: fileHash}
+// FileDiagnosticsKey returns the diagnostics query key for fileID.
+func FileDiagnosticsKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryFileDiagnostics, ID: fileID}
 }
 
-// FileDiagnostics reads typed diagnostics from the memo engine.
-func FileDiagnostics(ctx context.Context, engine *memo.Engine, fileHash string) ([]syntax.Diagnostic, error) {
-	value, err := engine.Get(ctx, FileDiagnosticsKey(fileHash))
+// FileDiagnostics reads typed diagnostics from the memo engine. fileID must be a
+// composite produced by FileID(path, hash).
+func FileDiagnostics(ctx context.Context, engine *memo.Engine, fileID string) ([]syntax.Diagnostic, error) {
+	value, err := engine.Get(ctx, FileDiagnosticsKey(fileID))
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +143,8 @@ func fileDiagnostics(ctx context.Context, q *memo.Context, key memo.Key) (any, e
 	return diagnostics, nil
 }
 
-func getFileInput(ctx context.Context, q *memo.Context, fileHash string) (FileInput, error) {
-	value, err := q.Get(ctx, FileInputKey(fileHash))
+func getFileInput(ctx context.Context, q *memo.Context, fileID string) (FileInput, error) {
+	value, err := q.Get(ctx, FileInputKey(fileID))
 	if err != nil {
 		return FileInput{}, err
 	}
@@ -152,8 +168,8 @@ func getWorkspace(ctx context.Context, q *memo.Context) (project.Workspace, erro
 	return workspace, nil
 }
 
-func getParseTree(ctx context.Context, q *memo.Context, fileHash string) (*syntax.Tree, error) {
-	value, err := q.Get(ctx, ParseTreeKey(fileHash))
+func getParseTree(ctx context.Context, q *memo.Context, fileID string) (*syntax.Tree, error) {
+	value, err := q.Get(ctx, ParseTreeKey(fileID))
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +180,8 @@ func getParseTree(ctx context.Context, q *memo.Context, fileHash string) (*synta
 	return tree, nil
 }
 
-func getImportEdges(ctx context.Context, q *memo.Context, fileHash string) ([]importedges.Edge, error) {
-	value, err := q.Get(ctx, ImportEdgesKey(fileHash))
+func getImportEdges(ctx context.Context, q *memo.Context, fileID string) ([]importedges.Edge, error) {
+	value, err := q.Get(ctx, ImportEdgesKey(fileID))
 	if err != nil {
 		return nil, err
 	}

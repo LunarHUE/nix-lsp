@@ -24,13 +24,14 @@ type Handler struct {
 	memo      *memo.Engine
 	publisher *diagnosticsPublisher
 
-	mu            sync.RWMutex
-	diagnostics   map[string][]syntax.Diagnostic
-	workspace     project.Workspace
-	workspaceOK   bool
-	workspaceErr  error
-	workspaceDone chan struct{}
-	generation    uint64
+	mu             sync.RWMutex
+	diagnostics    map[string][]syntax.Diagnostic
+	diagGeneration map[string]uint64
+	workspace      project.Workspace
+	workspaceOK    bool
+	workspaceErr   error
+	workspaceDone  chan struct{}
+	generation     uint64
 }
 
 // NewHandler creates a handler with empty in-memory state.
@@ -40,11 +41,12 @@ func NewHandler() *Handler {
 	facts.SetWorkspace(engine, project.Workspace{})
 
 	handler := &Handler{
-		vfs:         vfs.New(),
-		tasks:       lsp.NewScheduler(64),
-		memo:        engine,
-		publisher:   newDiagnosticsPublisher(),
-		diagnostics: make(map[string][]syntax.Diagnostic),
+		vfs:            vfs.New(),
+		tasks:          lsp.NewScheduler(64),
+		memo:           engine,
+		publisher:      newDiagnosticsPublisher(),
+		diagnostics:    make(map[string][]syntax.Diagnostic),
+		diagGeneration: make(map[string]uint64),
 	}
 	handler.tasks.Start(context.Background(), 2)
 	return handler
@@ -223,12 +225,14 @@ func (h *Handler) didClose(params json.RawMessage) error {
 		return err
 	}
 
+	generation := h.nextGeneration()
 	h.mu.Lock()
 	delete(h.diagnostics, decoded.TextDocument.URI)
+	h.diagGeneration[decoded.TextDocument.URI] = generation
 	h.mu.Unlock()
 	h.publisher.Publish(diagnosticUpdate{
 		URI:        decoded.TextDocument.URI,
-		Generation: h.nextGeneration(),
+		Generation: generation,
 		Debounce:   false,
 	})
 	return nil
@@ -248,16 +252,26 @@ func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snap
 		return err
 	}
 
-	facts.SetFileInput(h.memo, file.Hash, facts.FileInput{
+	fileID := facts.FileID(file.Path, file.Hash)
+	facts.SetFileInput(h.memo, fileID, facts.FileInput{
 		Path:    file.Path,
 		Content: file.Content,
 	})
-	diagnostics, err := facts.FileDiagnostics(ctx, h.memo, file.Hash)
+	diagnostics, err := facts.FileDiagnostics(ctx, h.memo, fileID)
 	if err != nil {
 		return err
 	}
 
+	// Guard the in-memory cache by generation: a slower, older-generation
+	// compute (e.g. a didOpen task that lands after a newer didChange) must not
+	// overwrite fresher diagnostics. The publisher applies the same ordering to
+	// its sends; this keeps the handler's own cache consistent with it.
 	h.mu.Lock()
+	if generation < h.diagGeneration[uri] {
+		h.mu.Unlock()
+		return nil
+	}
+	h.diagGeneration[uri] = generation
 	h.diagnostics[uri] = cloneDiagnostics(diagnostics)
 	h.mu.Unlock()
 
