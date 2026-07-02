@@ -35,7 +35,11 @@
         "extensions": [
           ".nix"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/nix-light.svg",
+          "dark": "./icons/nix-dark.svg"
+        }
       },
       {
         "id": "json",
