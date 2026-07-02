@@ -21,9 +21,10 @@ go run ./cmd/nixls
 
 ## Testing in VS Code
 
-The server speaks LSP/JSON-RPC over stdio and currently publishes diagnostics
-only. You can try it end-to-end in VS Code with the bundled development client
-under [editors/vscode](editors/vscode).
+The server speaks LSP/JSON-RPC over stdio. It publishes diagnostics and answers
+within-file document symbols (outline), go-to-definition, and document
+highlights. You can try it end-to-end in VS Code with the bundled development
+client under [editors/vscode](editors/vscode).
 
 ### 1. Build the server
 
@@ -81,6 +82,12 @@ point it at the `nixls` binary, use **stdio** transport, and associate it with
    save/edit `default.nix`. The diagnostic clears once the target resolves.
 5. To see a syntax diagnostic, put a lone `{` in a file — tree-sitter reports
    the parse error as a diagnostic.
+6. Unused, duplicate, and bad-`inherit` bindings surface as diagnostics with
+   their own severities (unused bindings are warnings; the rest are errors).
+7. Open the Outline view to see the file's attribute/let structure. Put the
+   cursor on a `let` binding or attribute name (or a use of it) and try
+   **Go to Definition** and **Highlight** (highlighting shows the definition as
+   a write and every use as a read). These work within a single file.
 
 The same import checks fire for `imports = [ ./x.nix ]` and
 `callPackage ./x.nix` references. In a flake workspace under git, an import
@@ -95,6 +102,12 @@ git-tracked files, so run git add`.
 - Syntax diagnostics (tree-sitter `ERROR`/`MISSING` nodes).
 - Import diagnostics (missing / untracked `import`, `imports = [ ... ]`, and
   `callPackage` targets).
+- Binding diagnostics: unused bindings (warning), plus duplicate and
+  bad-`inherit` bindings (error).
+- Document symbols (outline), go-to-definition, and document highlights — all
+  scoped to a single file.
 
-It does **not** yet provide completion, hover, or go-to-definition, and it uses
-**full-document** text sync (the whole document is resent on each change).
+Go-to-definition and highlights are **within-file only**: a reference that
+resolves to a binding in another file is not followed yet. `nixls` also does
+**not** yet provide completion or hover, and it uses **full-document** text sync
+(the whole document is resent on each change).

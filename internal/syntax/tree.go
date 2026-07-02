@@ -3,6 +3,7 @@ package syntax
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	sitter "github.com/smacker/go-tree-sitter"
 )
@@ -41,15 +42,25 @@ type Edit struct {
 }
 
 // Tree wraps a parsed Nix tree and the content it was parsed from.
+//
+// The underlying tree-sitter tree lazily populates an internal node cache as the
+// tree is navigated, and that cache is not safe for concurrent access. Because a
+// single parsed Tree is memoized and shared across concurrent consumers
+// (background diagnostics plus synchronous LSP requests), every navigation call
+// that can touch the cache is serialized through nav. Pure reads of a node's own
+// data (kind, text, range) do not touch the cache and need no locking.
 type Tree struct {
 	tree    *sitter.Tree
 	content []byte
+	nav     *sync.Mutex
 }
 
-// Node is a lightweight syntax node wrapper.
+// Node is a lightweight syntax node wrapper. It carries the owning tree's nav
+// mutex so navigation from any node stays serialized with the rest of the tree.
 type Node struct {
 	node    *sitter.Node
 	content []byte
+	nav     *sync.Mutex
 }
 
 // Parse parses Nix source into a syntax tree.
@@ -62,7 +73,7 @@ func Parse(content []byte) (*Tree, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse nix: %w", err)
 	}
-	return &Tree{tree: tree, content: copied}, nil
+	return &Tree{tree: tree, content: copied, nav: &sync.Mutex{}}, nil
 }
 
 // Reparse reparses content. Edits are accepted for API stability; this session
@@ -76,7 +87,10 @@ func (t *Tree) Root() Node {
 	if t == nil || t.tree == nil {
 		return Node{}
 	}
-	return wrapNode(t.tree.RootNode(), t.content)
+	t.nav.Lock()
+	root := t.tree.RootNode()
+	t.nav.Unlock()
+	return wrapNode(root, t.content, t.nav)
 }
 
 // Content returns a copy of the parsed content.
@@ -119,7 +133,10 @@ func (t *Tree) Walk(fn func(Node) bool) {
 	if t == nil || t.tree == nil || fn == nil {
 		return
 	}
-	walkNode(wrapNode(t.tree.RootNode(), t.content), fn)
+	t.nav.Lock()
+	root := t.tree.RootNode()
+	t.nav.Unlock()
+	walkNode(wrapNode(root, t.content, t.nav), fn)
 }
 
 // Kind returns the tree-sitter node type.
@@ -151,7 +168,10 @@ func (n Node) ChildByFieldName(name string) Node {
 	if n.node == nil {
 		return Node{}
 	}
-	return wrapNode(n.node.ChildByFieldName(name), n.content)
+	n.nav.Lock()
+	child := n.node.ChildByFieldName(name)
+	n.nav.Unlock()
+	return wrapNode(child, n.content, n.nav)
 }
 
 // NamedChildren returns this node's named children.
@@ -160,9 +180,12 @@ func (n Node) NamedChildren() []Node {
 		return nil
 	}
 
-	children := make([]Node, 0, n.node.NamedChildCount())
-	for i := 0; i < int(n.node.NamedChildCount()); i++ {
-		children = append(children, wrapNode(n.node.NamedChild(i), n.content))
+	n.nav.Lock()
+	defer n.nav.Unlock()
+	count := int(n.node.NamedChildCount())
+	children := make([]Node, 0, count)
+	for i := 0; i < count; i++ {
+		children = append(children, wrapNode(n.node.NamedChild(i), n.content, n.nav))
 	}
 	return children
 }
@@ -172,7 +195,10 @@ func (n Node) Parent() Node {
 	if n.node == nil {
 		return Node{}
 	}
-	return wrapNode(n.node.Parent(), n.content)
+	n.nav.Lock()
+	parent := n.node.Parent()
+	n.nav.Unlock()
+	return wrapNode(parent, n.content, n.nav)
 }
 
 // IsZero reports whether this wrapper has no underlying node.
@@ -259,11 +285,11 @@ func walkNode(node Node, fn func(Node) bool) {
 	}
 }
 
-func wrapNode(node *sitter.Node, content []byte) Node {
+func wrapNode(node *sitter.Node, content []byte, nav *sync.Mutex) Node {
 	if node == nil || node.IsNull() {
-		return Node{content: content}
+		return Node{content: content, nav: nav}
 	}
-	return Node{node: node, content: content}
+	return Node{node: node, content: content, nav: nav}
 }
 
 func cloneBytes(content []byte) []byte {

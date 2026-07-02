@@ -118,6 +118,46 @@ func TestServerCancelRequestCancelsInFlightHandler(t *testing.T) {
 	}
 }
 
+func TestServerCapabilitiesSerializeFeatureProviders(t *testing.T) {
+	caps := ServerCapabilities{
+		TextDocumentSync:          1,
+		DocumentSymbolProvider:    true,
+		DefinitionProvider:        true,
+		DocumentHighlightProvider: true,
+	}
+	data, err := json.Marshal(caps)
+	if err != nil {
+		t.Fatalf("Marshal error = %v", err)
+	}
+	for _, field := range []string{
+		`"documentSymbolProvider":true`,
+		`"definitionProvider":true`,
+		`"documentHighlightProvider":true`,
+	} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("capabilities JSON %s missing %s", data, field)
+		}
+	}
+
+	var round ServerCapabilities
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal error = %v", err)
+	}
+	if round != caps {
+		t.Fatalf("round-trip = %+v, want %+v", round, caps)
+	}
+
+	// Zero-value providers are omitted so a minimal handler advertises nothing
+	// extra.
+	empty, err := json.Marshal(ServerCapabilities{TextDocumentSync: 1})
+	if err != nil {
+		t.Fatalf("Marshal empty error = %v", err)
+	}
+	if strings.Contains(string(empty), "Provider") {
+		t.Fatalf("empty capabilities JSON = %s, want no providers", empty)
+	}
+}
+
 func readAllMessages(t *testing.T, r io.Reader) []*Message {
 	t.Helper()
 	reader := NewReader(r)

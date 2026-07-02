@@ -108,6 +108,35 @@ func FileDiagnostics(ctx context.Context, engine *memo.Engine, fileID string) ([
 	return cloneDiagnostics(diagnostics), nil
 }
 
+// Scopes reads the scope analysis for fileID from the memo engine. fileID must
+// be a composite produced by FileID(path, hash). The returned *scopes.File is
+// immutable after analysis and safe to share across callers.
+func Scopes(ctx context.Context, engine *memo.Engine, fileID string) (*scopes.File, error) {
+	value, err := engine.Get(ctx, ScopesKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	file, ok := value.(*scopes.File)
+	if !ok {
+		return nil, fmt.Errorf("facts: Scopes returned %T", value)
+	}
+	return file, nil
+}
+
+// ParseTree reads the parse tree for fileID from the memo engine. fileID must be
+// a composite produced by FileID(path, hash).
+func ParseTree(ctx context.Context, engine *memo.Engine, fileID string) (*syntax.Tree, error) {
+	value, err := engine.Get(ctx, ParseTreeKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	tree, ok := value.(*syntax.Tree)
+	if !ok {
+		return nil, fmt.Errorf("facts: ParseTree returned %T", value)
+	}
+	return tree, nil
+}
+
 func parseTree(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
 	input, err := getFileInput(ctx, q, key.ID)
 	if err != nil {

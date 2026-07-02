@@ -332,6 +332,304 @@ func TestHandlerPublishesErrorSeverityForSyntaxDiagnostic(t *testing.T) {
 	}
 }
 
+func TestHandlerInitializeAdvertisesFeatureCapabilities(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	result, err := handler.Handle(context.Background(), "initialize", nil)
+	if err != nil {
+		t.Fatalf("initialize error = %v", err)
+	}
+	init, ok := result.(lsp.InitializeResult)
+	if !ok {
+		t.Fatalf("result type = %T, want lsp.InitializeResult", result)
+	}
+	caps := init.Capabilities
+	if !caps.DocumentSymbolProvider {
+		t.Error("DocumentSymbolProvider = false, want true")
+	}
+	if !caps.DefinitionProvider {
+		t.Error("DefinitionProvider = false, want true")
+	}
+	if !caps.DocumentHighlightProvider {
+		t.Error("DocumentHighlightProvider = false, want true")
+	}
+}
+
+func TestHandlerDocumentSymbolReturnsHierarchy(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	// Line layout (0-based):
+	//   0: let
+	//   1:   x = 1;
+	//   2:   cfg = {
+	//   3:     enable = true;
+	//   4:     nested = { value = 2; };
+	//   5:   };
+	//   6: in
+	//   7:   cfg
+	src := "let\n  x = 1;\n  cfg = {\n    enable = true;\n    nested = { value = 2; };\n  };\nin\n  cfg"
+	openDocument(t, handler, uri, src)
+
+	symbols := requestDocumentSymbols(t, handler, uri)
+	if len(symbols) != 2 {
+		t.Fatalf("top-level symbols = %d (%+v), want 2", len(symbols), symbols)
+	}
+
+	x := symbolByName(t, symbols, "x")
+	if x.Kind != 13 {
+		t.Errorf("x kind = %d, want 13 (Variable)", x.Kind)
+	}
+	if x.SelectionRange.Start.Line != 1 || x.SelectionRange.Start.Character != 2 {
+		t.Errorf("x selectionRange start = %+v, want 1:2", x.SelectionRange.Start)
+	}
+
+	cfg := symbolByName(t, symbols, "cfg")
+	if cfg.Kind != 13 {
+		t.Errorf("cfg kind = %d, want 13 (Variable, let binding)", cfg.Kind)
+	}
+	if len(cfg.Children) != 2 {
+		t.Fatalf("cfg children = %d (%+v), want 2", len(cfg.Children), cfg.Children)
+	}
+
+	enable := symbolByName(t, cfg.Children, "enable")
+	if enable.Kind != 8 {
+		t.Errorf("enable kind = %d, want 8 (Field)", enable.Kind)
+	}
+	nested := symbolByName(t, cfg.Children, "nested")
+	if nested.Kind != 19 {
+		t.Errorf("nested kind = %d, want 19 (Object)", nested.Kind)
+	}
+	value := symbolByName(t, nested.Children, "value")
+	if value.Kind != 8 {
+		t.Errorf("nested.value kind = %d, want 8 (Field)", value.Kind)
+	}
+}
+
+func TestHandlerDocumentSymbolAnswersDespiteSyntaxError(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	// Missing closing brace: still parses the let binding.
+	openDocument(t, handler, uri, "let\n  x = 1;\nin {\n  a = x;")
+
+	symbols := requestDocumentSymbols(t, handler, uri)
+	if symbolByName(t, symbols, "x").Name != "x" {
+		t.Fatalf("symbols = %+v, want at least binding x", symbols)
+	}
+}
+
+func TestHandlerDefinitionOnReferenceReturnsBindingNameRange(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	// 0: let
+	// 1:   x = 1;   (x def at 1:2)
+	// 2:   y = x;   (x use at 2:6)
+	// 3: in
+	// 4:   x        (x use at 4:2)
+	openDocument(t, handler, uri, "let\n  x = 1;\n  y = x;\nin\n  x")
+
+	location := requestDefinition(t, handler, uri, 2, 6)
+	if location == nil {
+		t.Fatal("definition on use = null, want binding location")
+	}
+	if location.URI != uri {
+		t.Errorf("location uri = %q, want %q", location.URI, uri)
+	}
+	if location.Range.Start.Line != 1 || location.Range.Start.Character != 2 {
+		t.Errorf("location start = %+v, want 1:2", location.Range.Start)
+	}
+	if location.Range.End.Character != 3 {
+		t.Errorf("location end char = %d, want 3", location.Range.End.Character)
+	}
+}
+
+func TestHandlerDefinitionOnBindingReturnsOwnRange(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	openDocument(t, handler, uri, "let\n  x = 1;\n  y = x;\nin\n  x")
+
+	location := requestDefinition(t, handler, uri, 1, 2)
+	if location == nil {
+		t.Fatal("definition on binding name = null, want own location")
+	}
+	if location.Range.Start.Line != 1 || location.Range.Start.Character != 2 {
+		t.Errorf("location start = %+v, want 1:2", location.Range.Start)
+	}
+}
+
+func TestHandlerDefinitionOnUnresolvedReturnsNull(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	// 3:   z is unresolved.
+	openDocument(t, handler, uri, "let\n  x = 1;\nin\n  z")
+
+	result, err := handler.Handle(context.Background(), "textDocument/definition", positionParams(t, uri, 3, 2))
+	if err != nil {
+		t.Fatalf("definition error = %v", err)
+	}
+	if result != nil {
+		t.Fatalf("definition on unresolved = %+v, want null", result)
+	}
+}
+
+func TestHandlerDocumentHighlightOnUseReturnsWriteAndReads(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	openDocument(t, handler, uri, "let\n  x = 1;\n  y = x;\nin\n  x")
+
+	// Cursor on the final use of x (4:2).
+	highlights := requestHighlights(t, handler, uri, 4, 2)
+	assertHighlightSet(t, highlights)
+}
+
+func TestHandlerDocumentHighlightOnDefinitionReturnsSameSet(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	openDocument(t, handler, uri, "let\n  x = 1;\n  y = x;\nin\n  x")
+
+	// Cursor on the definition of x (1:2).
+	highlights := requestHighlights(t, handler, uri, 1, 2)
+	assertHighlightSet(t, highlights)
+}
+
+func TestHandlerFeatureRequestsOnUnopenedURIReturnNull(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	// A URI that was never opened and does not exist on disk.
+	uri := mustURI(t, filepath.Join(t.TempDir(), "absent.nix"))
+
+	cases := []struct {
+		method string
+		params json.RawMessage
+	}{
+		{"textDocument/documentSymbol", mustJSON(t, map[string]any{"textDocument": map[string]any{"uri": uri}})},
+		{"textDocument/definition", positionParams(t, uri, 0, 0)},
+		{"textDocument/documentHighlight", positionParams(t, uri, 0, 0)},
+	}
+	for _, tc := range cases {
+		result, err := handler.Handle(context.Background(), tc.method, tc.params)
+		if err != nil {
+			t.Fatalf("%s error = %v, want nil", tc.method, err)
+		}
+		if result != nil {
+			t.Fatalf("%s result = %+v, want null", tc.method, result)
+		}
+	}
+}
+
+// assertHighlightSet checks the highlights for the shared `x` fixture: one write
+// at the definition (1:2) and two reads at the uses (2:6 and 4:2).
+func assertHighlightSet(t *testing.T, highlights []DocumentHighlight) {
+	t.Helper()
+	if len(highlights) != 3 {
+		t.Fatalf("highlights = %d (%+v), want 3", len(highlights), highlights)
+	}
+	var writes, reads int
+	for _, h := range highlights {
+		switch h.Kind {
+		case 3:
+			writes++
+			if h.Range.Start.Line != 1 || h.Range.Start.Character != 2 {
+				t.Errorf("write highlight start = %+v, want 1:2", h.Range.Start)
+			}
+		case 2:
+			reads++
+		default:
+			t.Errorf("unexpected highlight kind %d", h.Kind)
+		}
+	}
+	if writes != 1 {
+		t.Errorf("write highlights = %d, want 1", writes)
+	}
+	if reads != 2 {
+		t.Errorf("read highlights = %d, want 2", reads)
+	}
+}
+
+func requestDocumentSymbols(t *testing.T, handler *Handler, uri string) []DocumentSymbol {
+	t.Helper()
+	result, err := handler.Handle(context.Background(), "textDocument/documentSymbol", mustJSON(t, map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+	}))
+	if err != nil {
+		t.Fatalf("documentSymbol error = %v", err)
+	}
+	symbols, ok := result.([]DocumentSymbol)
+	if !ok {
+		t.Fatalf("documentSymbol result type = %T, want []DocumentSymbol", result)
+	}
+	return symbols
+}
+
+func requestDefinition(t *testing.T, handler *Handler, uri string, line, character int) *Location {
+	t.Helper()
+	result, err := handler.Handle(context.Background(), "textDocument/definition", positionParams(t, uri, line, character))
+	if err != nil {
+		t.Fatalf("definition error = %v", err)
+	}
+	if result == nil {
+		return nil
+	}
+	location, ok := result.(*Location)
+	if !ok {
+		t.Fatalf("definition result type = %T, want *Location", result)
+	}
+	return location
+}
+
+func requestHighlights(t *testing.T, handler *Handler, uri string, line, character int) []DocumentHighlight {
+	t.Helper()
+	result, err := handler.Handle(context.Background(), "textDocument/documentHighlight", positionParams(t, uri, line, character))
+	if err != nil {
+		t.Fatalf("documentHighlight error = %v", err)
+	}
+	highlights, ok := result.([]DocumentHighlight)
+	if !ok {
+		t.Fatalf("documentHighlight result type = %T, want []DocumentHighlight", result)
+	}
+	return highlights
+}
+
+func positionParams(t *testing.T, uri string, line, character int) json.RawMessage {
+	t.Helper()
+	return mustJSON(t, map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": line, "character": character},
+	})
+}
+
+func symbolByName(t *testing.T, symbols []DocumentSymbol, name string) DocumentSymbol {
+	t.Helper()
+	for _, symbol := range symbols {
+		if symbol.Name == name {
+			return symbol
+		}
+	}
+	t.Fatalf("symbol %q not found in %+v", name, symbols)
+	return DocumentSymbol{}
+}
+
 func openDocument(t *testing.T, handler *Handler, uri string, text string) {
 	t.Helper()
 	_, err := handler.Handle(context.Background(), "textDocument/didOpen", mustJSON(t, map[string]any{

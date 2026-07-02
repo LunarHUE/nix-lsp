@@ -76,7 +76,10 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		h.startWorkspaceDiscovery(params)
 		return lsp.InitializeResult{
 			Capabilities: lsp.ServerCapabilities{
-				TextDocumentSync: 1,
+				TextDocumentSync:          1,
+				DocumentSymbolProvider:    true,
+				DefinitionProvider:        true,
+				DocumentHighlightProvider: true,
 			},
 			ServerInfo: &lsp.ServerInfo{
 				Name: "nix-lsp",
@@ -88,6 +91,12 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		return nil, h.didChange(params)
 	case "textDocument/didClose":
 		return nil, h.didClose(params)
+	case "textDocument/documentSymbol":
+		return h.documentSymbol(ctx, params)
+	case "textDocument/definition":
+		return h.definition(ctx, params)
+	case "textDocument/documentHighlight":
+		return h.documentHighlight(ctx, params)
 	case "textDocument/didSave", "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles":
 		return nil, nil
 	default:

@@ -239,7 +239,10 @@ type InitializeResult struct {
 }
 
 type ServerCapabilities struct {
-	TextDocumentSync int `json:"textDocumentSync,omitempty"`
+	TextDocumentSync          int  `json:"textDocumentSync,omitempty"`
+	DocumentSymbolProvider    bool `json:"documentSymbolProvider,omitempty"`
+	DefinitionProvider        bool `json:"definitionProvider,omitempty"`
+	DocumentHighlightProvider bool `json:"documentHighlightProvider,omitempty"`
 }
 
 type ServerInfo struct {

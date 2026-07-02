@@ -12,3 +12,4 @@ coverage.out
 .cache/
 
 .envrc
+node_modules
