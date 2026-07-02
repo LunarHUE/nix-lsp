@@ -53,9 +53,38 @@ test -race, plus a real-binary stdio smoke test per feature stage):
 - Incremental reparse (Reparse is API-stable but does a full parse).
 
 Everything else shipped: untracked-import quickfix, indexing progress,
-cross-file attribute definition. Next: Phase 2 — flake.lock parsing, input
-model (follows graph), input hover/navigation/completion, unused-input and
-dangling-follows diagnostics, add/remove/update-input code actions.
+cross-file attribute definition.
+
+## Phase 2 (flake intelligence): COMPLETE
+
+All in `internal/analysis/flake` + `internal/server/flake*.go`, root
+flake.nix only, commits `ffd61e2` → `204eadc`:
+
+- Model: flake.lock JSON parse (Ref = string-or-array), flake.nix input
+  extraction (nested + sugar forms merged per input, BindingRanges,
+  follows edges, flake=false, outputs formals/ellipsis/@/InsertAnchor).
+  Lock is a memo singleton input (SetFlakeLock, raw bytes, DeepEqual
+  dedup) mirroring the Workspace pattern; watcher + VS Code client track
+  `**/flake.lock`.
+- Diagnostics (codes): dangling-follows (error), input-not-locked,
+  stale-lock-entry, unused-input (warnings; unused only fires with strict
+  formals — no `...`, no @-pattern).
+- Hover on input names/urls/follows targets (url + locked source, 12-char
+  rev, lastModified date). gd on follows targets and outputs formals →
+  input declaration (runs BEFORE scope definitionAt: formals self-resolve
+  otherwise).
+- Completion (two contexts only): follows target strings (inputs minus
+  the override owner) and outputs formals (missing inputs + self).
+- Quickfixes with WorkspaceEdit (first edit-based actions): remove input
+  (deletes all contributing bindings, full-line expansion), add input to
+  outputs (insert at InsertAnchor), follows did-you-mean (Levenshtein ≤ 2,
+  cap 3, preserves /nested remainders). Actions gate on exact
+  diagnostic code+range matches.
+
+Next: Phase 3 (package index) — nix runner pool, locked-rev package index,
+bbolt storage, `pkgs.` completion/hover. NOTE: introduces new external
+dependencies (bbolt) and executing the `nix` binary — confirm direction
+with the user before starting.
 
 Phase-2 warts to remember:
 - The window/workDoneProgress/create request can theoretically hit the wire
