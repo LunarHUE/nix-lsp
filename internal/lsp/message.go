@@ -72,6 +72,13 @@ type notificationMessage struct {
 	Params  any    `json:"params,omitempty"`
 }
 
+type requestMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method"`
+	Params  any             `json:"params,omitempty"`
+}
+
 func (m responseMessage) MarshalJSON() ([]byte, error) {
 	if m.Error != nil {
 		return json.Marshal(struct {
@@ -110,6 +117,10 @@ func newErrorResponse(id json.RawMessage, code int, message string) responseMess
 
 func newNotification(method string, params any) notificationMessage {
 	return notificationMessage{JSONRPC: jsonrpcVersion, Method: method, Params: params}
+}
+
+func newRequest(id json.RawMessage, method string, params any) requestMessage {
+	return requestMessage{JSONRPC: jsonrpcVersion, ID: id, Method: method, Params: params}
 }
 
 type CancelError struct {

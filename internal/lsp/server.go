@@ -7,7 +7,12 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 )
+
+// errConnectionClosed is returned to a pending Call when the connection shuts
+// down (read error, EOF, or context cancellation) before a response arrives.
+var errConnectionClosed = errors.New("lsp: connection closed")
 
 const (
 	errParseError     = -32700
@@ -33,6 +38,17 @@ type NotificationHandler interface {
 	SetNotifier(Notifier)
 }
 
+// Caller makes server-to-client JSON-RPC requests and waits for the response.
+type Caller interface {
+	Call(ctx context.Context, method string, params any, result any) error
+}
+
+// CallerHandler is implemented by handlers that need to make server-to-client
+// requests.
+type CallerHandler interface {
+	SetCaller(Caller)
+}
+
 type HandlerFunc func(ctx context.Context, method string, params json.RawMessage) (any, error)
 
 func (f HandlerFunc) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -48,6 +64,10 @@ type Server struct {
 	shuttingDown bool
 	requests     map[string]context.CancelFunc
 	inflight     sync.WaitGroup
+
+	callSeq       uint64
+	pending       map[string]chan *Message
+	pendingClosed bool
 }
 
 func NewServer(in io.Reader, out io.Writer, handler Handler) *Server {
@@ -59,11 +79,65 @@ func NewServer(in io.Reader, out io.Writer, handler Handler) *Server {
 		writer:   NewWriter(out),
 		handler:  handler,
 		requests: make(map[string]context.CancelFunc),
+		pending:  make(map[string]chan *Message),
 	}
 	if notificationHandler, ok := handler.(NotificationHandler); ok {
 		notificationHandler.SetNotifier(server)
 	}
+	if callerHandler, ok := handler.(CallerHandler); ok {
+		callerHandler.SetCaller(server)
+	}
 	return server
+}
+
+// Call sends a server-to-client request and waits for its response. It returns
+// the response error as a *ResponseError, ctx.Err() on cancellation, or an
+// error if the connection closes before a response arrives.
+func (s *Server) Call(ctx context.Context, method string, params any, result any) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	seq := atomic.AddUint64(&s.callSeq, 1)
+	idRaw := json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("nixls-%d", seq)))
+	key := requestKey(idRaw)
+	ch := make(chan *Message, 1)
+
+	s.mu.Lock()
+	if s.pendingClosed {
+		s.mu.Unlock()
+		return errConnectionClosed
+	}
+	s.pending[key] = ch
+	s.mu.Unlock()
+
+	if err := s.writer.WriteMessage(newRequest(idRaw, method, params)); err != nil {
+		s.mu.Lock()
+		delete(s.pending, key)
+		s.mu.Unlock()
+		return err
+	}
+
+	select {
+	case <-ctx.Done():
+		s.mu.Lock()
+		delete(s.pending, key)
+		s.mu.Unlock()
+		return ctx.Err()
+	case msg, ok := <-ch:
+		if !ok || msg == nil {
+			return errConnectionClosed
+		}
+		if msg.Error != nil {
+			return msg.Error
+		}
+		if result != nil && len(msg.Result) > 0 {
+			return json.Unmarshal(msg.Result, result)
+		}
+		return nil
+	}
 }
 
 // Notify sends a server-to-client notification.
@@ -78,6 +152,7 @@ func (s *Server) Notify(ctx context.Context, method string, params any) error {
 
 func (s *Server) Run(ctx context.Context) error {
 	defer s.inflight.Wait()
+	defer s.closePending()
 
 	for {
 		select {
@@ -123,6 +198,7 @@ func (s *Server) dispatch(ctx context.Context, msg *Message) error {
 		}
 		return s.handleNotification(ctx, msg.Method, msg.Params)
 	case msg.IsResponse():
+		s.routeResponse(msg)
 		return nil
 	default:
 		if msg.HasID {
@@ -183,6 +259,34 @@ func (s *Server) cancelRequest(params json.RawMessage) error {
 		cancel()
 	}
 	return nil
+}
+
+// routeResponse delivers a client response to the matching pending Call. It
+// runs synchronously on the read loop, so it never races closePending (which
+// runs only after Run returns). Unknown IDs are silently dropped.
+func (s *Server) routeResponse(msg *Message) {
+	key := requestKey(msg.ID)
+	s.mu.Lock()
+	ch := s.pending[key]
+	delete(s.pending, key)
+	s.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	ch <- msg
+}
+
+// closePending fails every in-flight Call when the connection shuts down.
+// Closing each channel unblocks Call, which treats a closed channel as a
+// connection-closed error. Setting pendingClosed makes later Calls fail fast.
+func (s *Server) closePending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingClosed = true
+	for key, ch := range s.pending {
+		close(ch)
+		delete(s.pending, key)
+	}
 }
 
 func (s *Server) cancelAll() {

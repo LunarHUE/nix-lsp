@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
 	"github.com/wesleybaldwin/nix-lsp/internal/lsp"
@@ -42,6 +44,11 @@ type Handler struct {
 	workspaceErr   error
 	workspaceDone  chan struct{}
 	generation     uint64
+
+	notifier          lsp.Notifier
+	caller            lsp.Caller
+	progressSupported bool
+	progressSeq       uint64
 }
 
 // NewHandler creates a handler with empty in-memory state.
@@ -62,9 +69,21 @@ func NewHandler() *Handler {
 	return handler
 }
 
-// SetNotifier attaches the LSP notification sink.
+// SetNotifier attaches the LSP notification sink. The publisher owns
+// diagnostics; the handler keeps its own reference for progress notifications.
 func (h *Handler) SetNotifier(notifier lsp.Notifier) {
+	h.mu.Lock()
+	h.notifier = notifier
+	h.mu.Unlock()
 	h.publisher.SetNotifier(notifier)
+}
+
+// SetCaller attaches the server-to-client request sink used for work-done
+// progress creation during workspace indexing.
+func (h *Handler) SetCaller(caller lsp.Caller) {
+	h.mu.Lock()
+	h.caller = caller
+	h.mu.Unlock()
 }
 
 // Close stops background work owned by the handler.
@@ -83,6 +102,9 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 
 	switch method {
 	case "initialize":
+		h.mu.Lock()
+		h.progressSupported = initializeProgressSupported(params)
+		h.mu.Unlock()
 		h.startWorkspaceDiscovery(params)
 		return lsp.InitializeResult{
 			Capabilities: lsp.ServerCapabilities{
@@ -187,6 +209,22 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 	h.mu.Unlock()
 
 	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+		h.mu.RLock()
+		caller := h.caller
+		notifier := h.notifier
+		progressOn := h.progressSupported
+		h.mu.RUnlock()
+
+		var progress *indexingProgress
+		if progressOn {
+			progress = h.startIndexingProgress(caller, notifier)
+		}
+		// Progress always ends once create succeeded, even if discovery errored.
+		endMessage := "Indexing failed"
+		if progress != nil {
+			defer func() { progress.end(endMessage) }()
+		}
+
 		workspace, err := project.Discover(start)
 		h.mu.Lock()
 		h.workspace = workspace
@@ -197,9 +235,18 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 		if err == nil {
 			facts.SetWorkspace(h.memo, workspace)
 			snapshot := h.vfs.Snapshot()
-			for _, file := range workspace.Files {
+			total := len(workspace.Files)
+			lastPct := -1
+			for i, file := range workspace.Files {
 				_ = h.computeFileDiagnostics(ctx, snapshot, file.URI, file.Path, h.nextGeneration(), false)
+				if progress != nil && total > 0 {
+					if pct := 100 * (i + 1) / total; pct != lastPct {
+						lastPct = pct
+						progress.report(fmt.Sprintf("%d/%d files", i+1, total), uint(pct))
+					}
+				}
 			}
+			endMessage = fmt.Sprintf("Indexed %d files", total)
 		}
 
 		h.mu.Lock()
@@ -207,6 +254,48 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 		h.mu.Unlock()
 		return err
 	})
+}
+
+// indexingProgress reports a single work-done progress session over the LSP
+// notifier. A nil *indexingProgress is a valid no-op receiver, so callers need
+// no separate nil checks when progress is disabled or create was rejected.
+type indexingProgress struct {
+	notifier lsp.Notifier
+	token    string
+}
+
+// startIndexingProgress asks the client to create a progress token, then emits
+// the begin notification. It returns nil (progress disabled) when there is no
+// caller/notifier or the client rejects the create request; indexing must still
+// proceed in that case, so a bounded context keeps a mute client from stalling.
+func (h *Handler) startIndexingProgress(caller lsp.Caller, notifier lsp.Notifier) *indexingProgress {
+	if caller == nil || notifier == nil {
+		return nil
+	}
+	token := fmt.Sprintf("nix-lsp/indexing/%d", atomic.AddUint64(&h.progressSeq, 1))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := caller.Call(ctx, "window/workDoneProgress/create", workDoneProgressCreateParams{Token: token}, nil); err != nil {
+		return nil
+	}
+	progress := &indexingProgress{notifier: notifier, token: token}
+	progress.notify(workDoneProgressBegin{Kind: "begin", Title: "Indexing Nix workspace"})
+	return progress
+}
+
+func (p *indexingProgress) notify(value any) {
+	if p == nil {
+		return
+	}
+	_ = p.notifier.Notify(context.Background(), "$/progress", progressParams{Token: p.token, Value: value})
+}
+
+func (p *indexingProgress) report(message string, percentage uint) {
+	p.notify(workDoneProgressReport{Kind: "report", Message: message, Percentage: percentage})
+}
+
+func (p *indexingProgress) end(message string) {
+	p.notify(workDoneProgressEnd{Kind: "end", Message: message})
 }
 
 func (h *Handler) didOpen(params json.RawMessage) error {
@@ -604,9 +693,56 @@ type protocolPosition struct {
 }
 
 type initializeParams struct {
-	RootURI          string            `json:"rootUri"`
-	RootPath         string            `json:"rootPath"`
-	WorkspaceFolders []workspaceFolder `json:"workspaceFolders"`
+	RootURI          string             `json:"rootUri"`
+	RootPath         string             `json:"rootPath"`
+	WorkspaceFolders []workspaceFolder  `json:"workspaceFolders"`
+	Capabilities     clientCapabilities `json:"capabilities"`
+}
+
+type clientCapabilities struct {
+	Window windowClientCapabilities `json:"window"`
+}
+
+type windowClientCapabilities struct {
+	WorkDoneProgress bool `json:"workDoneProgress"`
+}
+
+// workDoneProgressCreateParams is the payload of the
+// window/workDoneProgress/create request.
+type workDoneProgressCreateParams struct {
+	Token string `json:"token"`
+}
+
+type progressParams struct {
+	Token string `json:"token"`
+	Value any    `json:"value"`
+}
+
+type workDoneProgressBegin struct {
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+}
+
+type workDoneProgressReport struct {
+	Kind       string `json:"kind"`
+	Message    string `json:"message,omitempty"`
+	Percentage uint   `json:"percentage,omitempty"`
+}
+
+type workDoneProgressEnd struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message,omitempty"`
+}
+
+func initializeProgressSupported(params json.RawMessage) bool {
+	if len(params) == 0 {
+		return false
+	}
+	var decoded initializeParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return false
+	}
+	return decoded.Capabilities.Window.WorkDoneProgress
 }
 
 type workspaceFolder struct {

@@ -102,6 +102,9 @@ point it at the `nixls` binary, use **stdio** transport, and associate it with
     update without reopening. This relies on the bundled client's file watcher
     (`**/*.nix`), which forwards changes as `workspace/didChangeWatchedFiles`;
     open editor buffers stay the source of truth for their own documents.
+11. On a large workspace, an "Indexing Nix workspace" progress indication shows
+    in the status bar during startup while the server computes initial
+    diagnostics for every file.
 
 The same import checks fire for `imports = [ ./x.nix ]` and
 `callPackage ./x.nix` references. In a flake workspace under git, an import
