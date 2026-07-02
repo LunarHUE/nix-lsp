@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/wesleybaldwin/nix-lsp/internal/analysis/static"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
 	"github.com/wesleybaldwin/nix-lsp/internal/lsp"
+	"github.com/wesleybaldwin/nix-lsp/internal/memo"
 	"github.com/wesleybaldwin/nix-lsp/internal/project"
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
@@ -18,26 +19,32 @@ const errMethodNotFound = -32601
 
 // Handler is the main LSP handler for nixls.
 type Handler struct {
-	vfs   *vfs.Store
-	tasks *lsp.Scheduler
+	vfs       *vfs.Store
+	tasks     *lsp.Scheduler
+	memo      *memo.Engine
+	publisher *diagnosticsPublisher
 
 	mu            sync.RWMutex
 	diagnostics   map[string][]syntax.Diagnostic
-	contents      map[string][]byte
-	notifier      lsp.Notifier
 	workspace     project.Workspace
 	workspaceOK   bool
 	workspaceErr  error
 	workspaceDone chan struct{}
+	generation    uint64
 }
 
 // NewHandler creates a handler with empty in-memory state.
 func NewHandler() *Handler {
+	engine := memo.New()
+	facts.Register(engine)
+	facts.SetWorkspace(engine, project.Workspace{})
+
 	handler := &Handler{
 		vfs:         vfs.New(),
 		tasks:       lsp.NewScheduler(64),
+		memo:        engine,
+		publisher:   newDiagnosticsPublisher(),
 		diagnostics: make(map[string][]syntax.Diagnostic),
-		contents:    make(map[string][]byte),
 	}
 	handler.tasks.Start(context.Background(), 2)
 	return handler
@@ -45,14 +52,13 @@ func NewHandler() *Handler {
 
 // SetNotifier attaches the LSP notification sink.
 func (h *Handler) SetNotifier(notifier lsp.Notifier) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.notifier = notifier
+	h.publisher.SetNotifier(notifier)
 }
 
 // Close stops background work owned by the handler.
 func (h *Handler) Close() {
 	h.tasks.Stop()
+	h.publisher.Stop()
 }
 
 // Handle implements lsp.Handler.
@@ -65,7 +71,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 
 	switch method {
 	case "initialize":
-		h.startWorkspaceDiscovery(ctx, params)
+		h.startWorkspaceDiscovery(params)
 		return lsp.InitializeResult{
 			Capabilities: lsp.ServerCapabilities{
 				TextDocumentSync: 1,
@@ -128,7 +134,7 @@ func (h *Handler) Snapshot() *vfs.Snapshot {
 	return h.vfs.Snapshot()
 }
 
-func (h *Handler) startWorkspaceDiscovery(_ context.Context, params json.RawMessage) {
+func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 	start := initializeStartPath(params)
 	if start == "" {
 		return
@@ -142,52 +148,27 @@ func (h *Handler) startWorkspaceDiscovery(_ context.Context, params json.RawMess
 	h.workspaceDone = done
 	h.mu.Unlock()
 
-	result := h.tasks.Submit(context.Background(), lsp.LaneBackground, func(context.Context) error {
+	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
 		workspace, err := project.Discover(start)
-		workspaceDiagnostics := map[string][]syntax.Diagnostic{}
-		if err == nil {
-			workspaceDiagnostics = h.workspaceDiagnostics(workspace)
-		}
-
 		h.mu.Lock()
-		defer h.mu.Unlock()
 		h.workspace = workspace
 		h.workspaceErr = err
 		h.workspaceOK = err == nil
+		h.mu.Unlock()
+
 		if err == nil {
+			facts.SetWorkspace(h.memo, workspace)
+			snapshot := h.vfs.Snapshot()
 			for _, file := range workspace.Files {
-				delete(h.diagnostics, file.URI)
+				_ = h.computeFileDiagnostics(ctx, snapshot, file.URI, file.Path, h.nextGeneration(), false)
 			}
-			for uri, diagnostics := range workspaceDiagnostics {
-				h.diagnostics[uri] = cloneDiagnostics(diagnostics)
-			}
-		}
-		close(done)
-
-		if err == nil {
-			go h.publishWorkspaceDiagnostics(workspace)
-		}
-		return err
-	})
-
-	go func() {
-		taskResult := <-result
-		if taskResult.Err == nil {
-			return
 		}
 
 		h.mu.Lock()
-		if h.workspaceDone == done {
-			h.workspaceErr = taskResult.Err
-			h.workspaceOK = false
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}
+		close(done)
 		h.mu.Unlock()
-	}()
+		return err
+	})
 }
 
 func (h *Handler) didOpen(params json.RawMessage) error {
@@ -202,7 +183,7 @@ func (h *Handler) didOpen(params json.RawMessage) error {
 	if _, err := h.vfs.OpenBuffer(path, []byte(decoded.TextDocument.Text)); err != nil {
 		return err
 	}
-	h.setDiagnostics(decoded.TextDocument.URI, path, []byte(decoded.TextDocument.Text))
+	h.scheduleFileDiagnostics(decoded.TextDocument.URI, path, true)
 	return nil
 }
 
@@ -225,7 +206,7 @@ func (h *Handler) didChange(params json.RawMessage) error {
 			return openErr
 		}
 	}
-	h.setDiagnostics(decoded.TextDocument.URI, path, []byte(text))
+	h.scheduleFileDiagnostics(decoded.TextDocument.URI, path, true)
 	return nil
 }
 
@@ -244,89 +225,56 @@ func (h *Handler) didClose(params json.RawMessage) error {
 
 	h.mu.Lock()
 	delete(h.diagnostics, decoded.TextDocument.URI)
-	delete(h.contents, decoded.TextDocument.URI)
 	h.mu.Unlock()
-	h.publishDiagnostics(context.Background(), decoded.TextDocument.URI, nil, nil)
+	h.publisher.Publish(diagnosticUpdate{
+		URI:        decoded.TextDocument.URI,
+		Generation: h.nextGeneration(),
+		Debounce:   false,
+	})
 	return nil
 }
 
-func (h *Handler) setDiagnostics(uri string, path string, content []byte) {
-	h.mu.RLock()
-	workspace := h.workspace
-	workspaceOK := h.workspaceOK
-	h.mu.RUnlock()
-
-	diagnostics := h.combinedDiagnostics(workspace, workspaceOK, path, content)
-
-	h.mu.Lock()
-	h.diagnostics[uri] = cloneDiagnostics(diagnostics)
-	h.contents[uri] = cloneBytes(content)
-	h.mu.Unlock()
-
-	h.publishDiagnostics(context.Background(), uri, diagnostics, content)
-}
-
-func (h *Handler) workspaceDiagnostics(workspace project.Workspace) map[string][]syntax.Diagnostic {
-	diagnostics := make(map[string][]syntax.Diagnostic)
+func (h *Handler) scheduleFileDiagnostics(uri string, path string, debounce bool) {
+	generation := h.nextGeneration()
 	snapshot := h.vfs.Snapshot()
-	for _, file := range workspace.Files {
-		read, err := snapshot.ReadFile(file.Path)
-		if err != nil {
-			continue
-		}
-		h.mu.Lock()
-		h.contents[file.URI] = cloneBytes(read.Content)
-		h.mu.Unlock()
-		fileDiagnostics := h.combinedDiagnostics(workspace, true, file.Path, read.Content)
-		if len(fileDiagnostics) == 0 {
-			continue
-		}
-		diagnostics[file.URI] = fileDiagnostics
-	}
-	return diagnostics
-}
-
-func (h *Handler) publishWorkspaceDiagnostics(workspace project.Workspace) {
-	for _, file := range workspace.Files {
-		h.mu.RLock()
-		diagnostics := cloneDiagnostics(h.diagnostics[file.URI])
-		content := cloneBytes(h.contents[file.URI])
-		h.mu.RUnlock()
-		h.publishDiagnostics(context.Background(), file.URI, diagnostics, content)
-	}
-}
-
-func (h *Handler) publishDiagnostics(ctx context.Context, uri string, diagnostics []syntax.Diagnostic, content []byte) {
-	h.mu.RLock()
-	notifier := h.notifier
-	h.mu.RUnlock()
-	if notifier == nil {
-		return
-	}
-
-	_ = notifier.Notify(ctx, "textDocument/publishDiagnostics", publishDiagnosticsParams{
-		URI:         uri,
-		Diagnostics: toProtocolDiagnostics(diagnostics, content),
+	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+		return h.computeFileDiagnostics(ctx, snapshot, uri, path, generation, debounce)
 	})
 }
 
-func (h *Handler) combinedDiagnostics(workspace project.Workspace, workspaceOK bool, path string, content []byte) []syntax.Diagnostic {
-	tree, err := syntax.Parse(content)
+func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snapshot, uri string, path string, generation uint64, debounce bool) error {
+	file, err := snapshot.ReadFile(path)
 	if err != nil {
-		return []syntax.Diagnostic{{
-			Message: err.Error(),
-			Range:   syntax.Range{},
-		}}
+		return err
 	}
 
-	diagnostics := tree.Diagnostics()
-	if workspaceOK {
-		staticDiagnostics, err := static.FileDiagnostics(workspace, path, tree)
-		if err == nil {
-			diagnostics = append(diagnostics, staticDiagnostics...)
-		}
+	facts.SetFileInput(h.memo, file.Hash, facts.FileInput{
+		Path:    file.Path,
+		Content: file.Content,
+	})
+	diagnostics, err := facts.FileDiagnostics(ctx, h.memo, file.Hash)
+	if err != nil {
+		return err
 	}
-	return diagnostics
+
+	h.mu.Lock()
+	h.diagnostics[uri] = cloneDiagnostics(diagnostics)
+	h.mu.Unlock()
+
+	h.publisher.Publish(diagnosticUpdate{
+		URI:         uri,
+		Diagnostics: diagnostics,
+		Generation:  generation,
+		Debounce:    debounce,
+	})
+	return nil
+}
+
+func (h *Handler) nextGeneration() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.generation++
+	return h.generation
 }
 
 func cloneDiagnostics(diagnostics []syntax.Diagnostic) []syntax.Diagnostic {
@@ -335,15 +283,6 @@ func cloneDiagnostics(diagnostics []syntax.Diagnostic) []syntax.Diagnostic {
 	}
 	cloned := make([]syntax.Diagnostic, len(diagnostics))
 	copy(cloned, diagnostics)
-	return cloned
-}
-
-func cloneBytes(content []byte) []byte {
-	if len(content) == 0 {
-		return nil
-	}
-	cloned := make([]byte, len(content))
-	copy(cloned, content)
 	return cloned
 }
 
@@ -431,7 +370,7 @@ func initializeStartPath(params json.RawMessage) string {
 	return decoded.RootPath
 }
 
-func toProtocolDiagnostics(diagnostics []syntax.Diagnostic, content []byte) []protocolDiagnostic {
+func toProtocolDiagnostics(diagnostics []syntax.Diagnostic) []protocolDiagnostic {
 	if len(diagnostics) == 0 {
 		return nil
 	}

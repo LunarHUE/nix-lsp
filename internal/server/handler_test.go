@@ -1,18 +1,15 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/lsp"
+	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
@@ -41,7 +38,7 @@ func TestHandlerDidOpenStoresOverlayAndDiagnostics(t *testing.T) {
 	if string(file.Content) != "{" || !file.Overlay {
 		t.Fatalf("file = %q overlay=%v, want overlay content", file.Content, file.Overlay)
 	}
-	if got := handler.Diagnostics(uri); len(got) != 1 {
+	if got := waitForDiagnostics(t, handler, uri, 1); len(got) != 1 {
 		t.Fatalf("diagnostics = %v, want one syntax diagnostic", got)
 	}
 }
@@ -53,6 +50,7 @@ func TestHandlerDidChangeUpdatesOverlayAndDiagnostics(t *testing.T) {
 	uri := mustURI(t, path)
 
 	openDocument(t, handler, uri, "{")
+	waitForDiagnostics(t, handler, uri, 1)
 	_, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": uri, "version": 2},
 		"contentChanges": []map[string]any{
@@ -70,7 +68,7 @@ func TestHandlerDidChangeUpdatesOverlayAndDiagnostics(t *testing.T) {
 	if string(file.Content) != "{ ok = true; }" {
 		t.Fatalf("content = %q, want changed text", file.Content)
 	}
-	if got := handler.Diagnostics(uri); len(got) != 0 {
+	if got := waitForDiagnostics(t, handler, uri, 0); len(got) != 0 {
 		t.Fatalf("diagnostics = %v, want none", got)
 	}
 }
@@ -203,7 +201,7 @@ func TestHandlerDidChangeRefreshesStaticDiagnostics(t *testing.T) {
 	}
 
 	openDocument(t, handler, sourceURI, "{}")
-	if got := handler.Diagnostics(sourceURI); len(got) != 0 {
+	if got := waitForDiagnostics(t, handler, sourceURI, 0); len(got) != 0 {
 		t.Fatalf("diagnostics after open = %+v, want none", got)
 	}
 
@@ -217,7 +215,7 @@ func TestHandlerDidChangeRefreshesStaticDiagnostics(t *testing.T) {
 		t.Fatalf("didChange error = %v", err)
 	}
 
-	diagnostics := handler.Diagnostics(sourceURI)
+	diagnostics := waitForDiagnostics(t, handler, sourceURI, 1)
 	if len(diagnostics) != 1 {
 		t.Fatalf("diagnostics = %d, want 1", len(diagnostics))
 	}
@@ -229,29 +227,18 @@ func TestHandlerDidChangeRefreshesStaticDiagnostics(t *testing.T) {
 func TestHandlerPublishesDiagnosticsThroughLSP(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()
+	notifier := &captureNotifier{messages: make(chan publishDiagnosticsParams, 1)}
+	handler.SetNotifier(notifier)
 
 	path := filepath.Join(t.TempDir(), "test.nix")
 	uri := mustURI(t, path)
-	input := strings.Join([]string{
-		frame(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":` + quoteJSON(t, uri) + `,"languageId":"nix","version":1,"text":"{"}}}`),
-		frame(`{"jsonrpc":"2.0","method":"exit"}`),
-	}, "")
+	openDocument(t, handler, uri, "{")
 
-	var out bytes.Buffer
-	if err := lsp.NewServer(strings.NewReader(input), &out, handler).Run(context.Background()); err != nil {
-		t.Fatalf("Run error = %v", err)
-	}
-
-	messages := readMessages(t, &out)
-	if len(messages) != 1 {
-		t.Fatalf("messages = %d, want 1", len(messages))
-	}
-	if messages[0].Method != "textDocument/publishDiagnostics" {
-		t.Fatalf("method = %q, want publishDiagnostics", messages[0].Method)
-	}
 	var params publishDiagnosticsParams
-	if err := json.Unmarshal(messages[0].Params, &params); err != nil {
-		t.Fatalf("decode params: %v", err)
+	select {
+	case params = <-notifier.messages:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for publishDiagnostics")
 	}
 	if params.URI != uri {
 		t.Fatalf("uri = %q, want %q", params.URI, uri)
@@ -261,6 +248,52 @@ func TestHandlerPublishesDiagnosticsThroughLSP(t *testing.T) {
 	}
 	if params.Diagnostics[0].Range.Start.Line != 0 || params.Diagnostics[0].Range.Start.Character != 0 {
 		t.Fatalf("start = %+v, want 0:0", params.Diagnostics[0].Range.Start)
+	}
+}
+
+func TestSmokePublishesUnopenedWorkspaceAndDidChangeDiagnostics(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	notifier := &captureNotifier{messages: make(chan publishDiagnosticsParams, 16)}
+	handler.SetNotifier(notifier)
+
+	root := t.TempDir()
+	flake := filepath.Join(root, "flake.nix")
+	source := filepath.Join(root, "default.nix")
+	writeFile(t, flake, "import ./missing.nix")
+	writeFile(t, source, "{}")
+	rootURI := mustURI(t, root)
+	flakeURI := mustURI(t, flake)
+	sourceURI := mustURI(t, source)
+
+	if _, err := handler.Handle(context.Background(), "initialize", mustJSON(t, map[string]any{
+		"rootUri": rootURI,
+	})); err != nil {
+		t.Fatalf("initialize error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := handler.WaitForWorkspace(ctx); err != nil {
+		t.Fatalf("WaitForWorkspace error = %v", err)
+	}
+	workspacePublish := waitForPublish(t, notifier, flakeURI, 1)
+	if workspacePublish.Diagnostics[0].Message != "missing import target ./missing.nix" {
+		t.Fatalf("workspace message = %q", workspacePublish.Diagnostics[0].Message)
+	}
+
+	openDocument(t, handler, sourceURI, "{}")
+	waitForPublish(t, notifier, sourceURI, 0)
+	if _, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
+		"textDocument": map[string]any{"uri": sourceURI, "version": 2},
+		"contentChanges": []map[string]any{
+			{"text": "import ./other-missing.nix"},
+		},
+	})); err != nil {
+		t.Fatalf("didChange error = %v", err)
+	}
+	editPublish := waitForPublish(t, notifier, sourceURI, 1)
+	if editPublish.Diagnostics[0].Message != "missing import target ./other-missing.nix" {
+		t.Fatalf("edit message = %q", editPublish.Diagnostics[0].Message)
 	}
 }
 
@@ -302,31 +335,31 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func readMessages(t *testing.T, r io.Reader) []*lsp.Message {
+func waitForDiagnostics(t *testing.T, handler *Handler, uri string, want int) []syntax.Diagnostic {
 	t.Helper()
-	reader := lsp.NewReader(r)
-	var messages []*lsp.Message
+	deadline := time.Now().Add(time.Second)
+	var diagnostics []syntax.Diagnostic
+	for time.Now().Before(deadline) {
+		diagnostics = handler.Diagnostics(uri)
+		if len(diagnostics) == want {
+			return diagnostics
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return diagnostics
+}
+
+func waitForPublish(t *testing.T, notifier *captureNotifier, uri string, diagnosticCount int) publishDiagnosticsParams {
+	t.Helper()
+	deadline := time.After(time.Second)
 	for {
-		message, err := reader.ReadMessage()
-		if err == io.EOF {
-			return messages
+		select {
+		case params := <-notifier.messages:
+			if params.URI == uri && len(params.Diagnostics) == diagnosticCount {
+				return params
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for publishDiagnostics uri=%s count=%d", uri, diagnosticCount)
 		}
-		if err != nil {
-			t.Fatalf("ReadMessage error = %v", err)
-		}
-		messages = append(messages, message)
 	}
-}
-
-func frame(body string) string {
-	return "Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body
-}
-
-func quoteJSON(t *testing.T, value string) string {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("Marshal error = %v", err)
-	}
-	return string(data)
 }
