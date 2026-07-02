@@ -12,10 +12,10 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
-// FileDiagnostics returns static diagnostics for one file.
-func FileDiagnostics(workspace project.Workspace, sourcePath string, content []byte) ([]syntax.Diagnostic, error) {
+// FileDiagnostics returns static diagnostics for one parsed file.
+func FileDiagnostics(workspace project.Workspace, sourcePath string, tree *syntax.Tree) ([]syntax.Diagnostic, error) {
 	tracked := trackedFiles(workspace)
-	edges, err := importedges.Analyze(sourcePath, content, tracked)
+	edges, err := importedges.Analyze(sourcePath, tree, tracked)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,11 @@ func WorkspaceDiagnostics(workspace project.Workspace, snapshot *vfs.Snapshot) m
 		if err != nil {
 			continue
 		}
-		fileDiagnostics, err := FileDiagnostics(workspace, file.Path, read.Content)
+		tree, err := syntax.Parse(read.Content)
+		if err != nil {
+			continue
+		}
+		fileDiagnostics, err := FileDiagnostics(workspace, file.Path, tree)
 		if err != nil || len(fileDiagnostics) == 0 {
 			continue
 		}

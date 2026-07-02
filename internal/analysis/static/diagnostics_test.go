@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/project"
+	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
@@ -15,7 +16,7 @@ func TestFileDiagnosticsMissingImport(t *testing.T) {
 	source := writeFile(t, filepath.Join(root, "default.nix"), "import ./missing.nix")
 	workspace := project.Workspace{Root: normalize(t, root)}
 
-	diagnostics, err := FileDiagnostics(workspace, source, []byte("import ./missing.nix"))
+	diagnostics, err := FileDiagnostics(workspace, source, parse(t, "import ./missing.nix"))
 	if err != nil {
 		t.Fatalf("FileDiagnostics error = %v", err)
 	}
@@ -41,7 +42,7 @@ func TestFileDiagnosticsUntrackedFlakeImport(t *testing.T) {
 		},
 	}
 
-	diagnostics, err := FileDiagnostics(workspace, source, []byte("import ./module.nix"))
+	diagnostics, err := FileDiagnostics(workspace, source, parse(t, "import ./module.nix"))
 	if err != nil {
 		t.Fatalf("FileDiagnostics error = %v", err)
 	}
@@ -67,7 +68,7 @@ func TestFileDiagnosticsNoUntrackedWarningOutsideFlakeGitWorkspace(t *testing.T)
 		},
 	}
 
-	diagnostics, err := FileDiagnostics(workspace, source, []byte("import ./module.nix"))
+	diagnostics, err := FileDiagnostics(workspace, source, parse(t, "import ./module.nix"))
 	if err != nil {
 		t.Fatalf("FileDiagnostics error = %v", err)
 	}
@@ -114,4 +115,13 @@ func normalize(t *testing.T, path string) string {
 		t.Fatalf("NormalizePath error = %v", err)
 	}
 	return normalized
+}
+
+func parse(t *testing.T, content string) *syntax.Tree {
+	t.Helper()
+	tree, err := syntax.Parse([]byte(content))
+	if err != nil {
+		t.Fatalf("Parse error = %v", err)
+	}
+	return tree
 }

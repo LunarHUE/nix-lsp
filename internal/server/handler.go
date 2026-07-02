@@ -18,9 +18,8 @@ const errMethodNotFound = -32601
 
 // Handler is the main LSP handler for nixls.
 type Handler struct {
-	vfs    *vfs.Store
-	syntax *syntax.Analyzer
-	tasks  *lsp.Scheduler
+	vfs   *vfs.Store
+	tasks *lsp.Scheduler
 
 	mu            sync.RWMutex
 	diagnostics   map[string][]syntax.Diagnostic
@@ -36,7 +35,6 @@ type Handler struct {
 func NewHandler() *Handler {
 	handler := &Handler{
 		vfs:         vfs.New(),
-		syntax:      syntax.NewAnalyzer(),
 		tasks:       lsp.NewScheduler(64),
 		diagnostics: make(map[string][]syntax.Diagnostic),
 		contents:    make(map[string][]byte),
@@ -313,9 +311,17 @@ func (h *Handler) publishDiagnostics(ctx context.Context, uri string, diagnostic
 }
 
 func (h *Handler) combinedDiagnostics(workspace project.Workspace, workspaceOK bool, path string, content []byte) []syntax.Diagnostic {
-	diagnostics := h.syntax.Diagnostics(content)
+	tree, err := syntax.Parse(content)
+	if err != nil {
+		return []syntax.Diagnostic{{
+			Message: err.Error(),
+			Range:   syntax.Range{},
+		}}
+	}
+
+	diagnostics := tree.Diagnostics()
 	if workspaceOK {
-		staticDiagnostics, err := static.FileDiagnostics(workspace, path, content)
+		staticDiagnostics, err := static.FileDiagnostics(workspace, path, tree)
 		if err == nil {
 			diagnostics = append(diagnostics, staticDiagnostics...)
 		}
@@ -434,8 +440,8 @@ func toProtocolDiagnostics(diagnostics []syntax.Diagnostic, content []byte) []pr
 	for _, diagnostic := range diagnostics {
 		protocolDiagnostics = append(protocolDiagnostics, protocolDiagnostic{
 			Range: protocolRange{
-				Start: byteOffsetPosition(content, diagnostic.Range.Start),
-				End:   byteOffsetPosition(content, diagnostic.Range.End),
+				Start: toProtocolPosition(diagnostic.Range.Start),
+				End:   toProtocolPosition(diagnostic.Range.End),
 			},
 			Severity: 1,
 			Source:   "nix-lsp",
@@ -445,22 +451,6 @@ func toProtocolDiagnostics(diagnostics []syntax.Diagnostic, content []byte) []pr
 	return protocolDiagnostics
 }
 
-func byteOffsetPosition(content []byte, offset int) protocolPosition {
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > len(content) {
-		offset = len(content)
-	}
-
-	position := protocolPosition{}
-	for i := 0; i < offset; i++ {
-		if content[i] == '\n' {
-			position.Line++
-			position.Character = 0
-			continue
-		}
-		position.Character++
-	}
-	return position
+func toProtocolPosition(position syntax.Position) protocolPosition {
+	return protocolPosition{Line: position.Line, Character: position.Character}
 }

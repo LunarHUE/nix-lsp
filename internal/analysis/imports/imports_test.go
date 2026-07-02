@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
@@ -14,7 +15,7 @@ func TestAnalyzeImportPath(t *testing.T) {
 	target := writeFile(t, filepath.Join(root, "module.nix"), "{}")
 	tracked := map[string]bool{normalize(t, target): true}
 
-	edges, err := Analyze(source, []byte("import ./module.nix"), tracked)
+	edges, err := analyze(t, source, "import ./module.nix", tracked)
 	if err != nil {
 		t.Fatalf("Analyze error = %v", err)
 	}
@@ -24,18 +25,18 @@ func TestAnalyzeImportPath(t *testing.T) {
 	if edges[0].Literal != "./module.nix" || !edges[0].Exists || !edges[0].GitTracked {
 		t.Fatalf("edge = %+v", edges[0])
 	}
-	if edges[0].Range.Start != len("import ") {
-		t.Fatalf("range start = %d, want %d", edges[0].Range.Start, len("import "))
+	if edges[0].Range.Start.Character != len("import ") {
+		t.Fatalf("range start = %d, want %d", edges[0].Range.Start.Character, len("import "))
 	}
 }
 
 func TestAnalyzeImportsList(t *testing.T) {
 	root := t.TempDir()
-	source := writeFile(t, filepath.Join(root, "configuration.nix"), "imports = [ ./a.nix ./b.nix ];")
+	source := writeFile(t, filepath.Join(root, "configuration.nix"), "{ imports = [ ./a.nix ./b.nix ]; }")
 	writeFile(t, filepath.Join(root, "a.nix"), "{}")
 	writeFile(t, filepath.Join(root, "b.nix"), "{}")
 
-	edges, err := Analyze(source, []byte("imports = [ ./a.nix ./b.nix ];"), nil)
+	edges, err := analyze(t, source, "{ imports = [ ./a.nix ./b.nix ]; }", nil)
 	if err != nil {
 		t.Fatalf("Analyze error = %v", err)
 	}
@@ -52,7 +53,7 @@ func TestAnalyzeCallPackageDirectoryDefault(t *testing.T) {
 	source := writeFile(t, filepath.Join(root, "default.nix"), "pkgs.callPackage ./pkg {}")
 	target := writeFile(t, filepath.Join(root, "pkg", "default.nix"), "{}")
 
-	edges, err := Analyze(source, []byte("pkgs.callPackage ./pkg {}"), map[string]bool{normalize(t, target): true})
+	edges, err := analyze(t, source, "pkgs.callPackage ./pkg {}", map[string]bool{normalize(t, target): true})
 	if err != nil {
 		t.Fatalf("Analyze error = %v", err)
 	}
@@ -68,7 +69,7 @@ func TestAnalyzeMissingImport(t *testing.T) {
 	root := t.TempDir()
 	source := writeFile(t, filepath.Join(root, "default.nix"), "import ./missing.nix")
 
-	edges, err := Analyze(source, []byte("import ./missing.nix"), nil)
+	edges, err := analyze(t, source, "import ./missing.nix", nil)
 	if err != nil {
 		t.Fatalf("Analyze error = %v", err)
 	}
@@ -90,13 +91,81 @@ func TestAnalyzeIgnoresCommentsAndStrings(t *testing.T) {
 "import ./string.nix"
 `)
 
-	edges, err := Analyze(source, content, nil)
+	tree, err := syntax.Parse(content)
+	if err != nil {
+		t.Fatalf("Parse error = %v", err)
+	}
+	edges, err := Analyze(source, tree, nil)
 	if err != nil {
 		t.Fatalf("Analyze error = %v", err)
 	}
 	if len(edges) != 0 {
 		t.Fatalf("edges = %+v, want none", edges)
 	}
+}
+
+func TestAnalyzeImportParenthesizedPath(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "default.nix"), "import (./x.nix)")
+	writeFile(t, filepath.Join(root, "x.nix"), "{}")
+
+	edges, err := analyze(t, source, "import (./x.nix)", nil)
+	if err != nil {
+		t.Fatalf("Analyze error = %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d, want 1", len(edges))
+	}
+	if edges[0].Literal != "./x.nix" {
+		t.Fatalf("literal = %q, want ./x.nix", edges[0].Literal)
+	}
+}
+
+func TestAnalyzeMultilineImportsList(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "configuration.nix"), "")
+	writeFile(t, filepath.Join(root, "a.nix"), "{}")
+	writeFile(t, filepath.Join(root, "b.nix"), "{}")
+	content := `{
+  imports = [
+    ./a.nix
+    (./b.nix)
+  ];
+}`
+
+	edges, err := analyze(t, source, content, nil)
+	if err != nil {
+		t.Fatalf("Analyze error = %v", err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("edges = %d, want 2", len(edges))
+	}
+	if edges[0].Literal != "./a.nix" || edges[1].Literal != "./b.nix" {
+		t.Fatalf("edges = %+v", edges)
+	}
+}
+
+func TestAnalyzeIgnoresStringInterpolationPathText(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "default.nix"), "")
+	content := `"${import ./not-static.nix} ./also-not-import.nix"`
+
+	edges, err := analyze(t, source, content, nil)
+	if err != nil {
+		t.Fatalf("Analyze error = %v", err)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("edges = %+v, want none", edges)
+	}
+}
+
+func analyze(t *testing.T, source string, content string, tracked map[string]bool) ([]Edge, error) {
+	t.Helper()
+	tree, err := syntax.Parse([]byte(content))
+	if err != nil {
+		t.Fatalf("Parse error = %v", err)
+	}
+	return Analyze(source, tree, tracked)
 }
 
 func writeFile(t *testing.T, path, content string) string {
