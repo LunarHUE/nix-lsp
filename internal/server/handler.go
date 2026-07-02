@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/options"
 	"github.com/wesleybaldwin/nix-lsp/internal/lsp"
 	"github.com/wesleybaldwin/nix-lsp/internal/memo"
 	"github.com/wesleybaldwin/nix-lsp/internal/project"
@@ -49,6 +50,18 @@ type Handler struct {
 	caller            lsp.Caller
 	progressSupported bool
 	progressSeq       uint64
+
+	// options holds the NixOS option-documentation dataset. optionsIndex is
+	// swapped atomically once a load publishes it (nil until then, or when the
+	// feature is disabled). optionsOnce guards the single load kicked off from
+	// initialize. optionsDownloadEnabled gates auto mode's network fetch: the real
+	// server enables it, tests leave it off so none performs network I/O.
+	// optionsCtx is cancelled by Close to abort an in-flight download.
+	optionsIndex           atomic.Pointer[options.Index]
+	optionsOnce            sync.Once
+	optionsDownloadEnabled bool
+	optionsCtx             context.Context
+	optionsCancel          context.CancelFunc
 }
 
 // NewHandler creates a handler with empty in-memory state.
@@ -66,6 +79,7 @@ func NewHandler() *Handler {
 		diagnostics:    make(map[string][]syntax.Diagnostic),
 		diagGeneration: make(map[string]uint64),
 	}
+	handler.optionsCtx, handler.optionsCancel = context.WithCancel(context.Background())
 	handler.tasks.Start(context.Background(), 2)
 	return handler
 }
@@ -89,6 +103,9 @@ func (h *Handler) SetCaller(caller lsp.Caller) {
 
 // Close stops background work owned by the handler.
 func (h *Handler) Close() {
+	// Cancel before stopping the scheduler so an in-flight options download aborts
+	// rather than making the scheduler's Stop wait out its timeout.
+	h.optionsCancel()
 	h.tasks.Stop()
 	h.publisher.Stop()
 }
@@ -107,6 +124,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		h.progressSupported = initializeProgressSupported(params)
 		h.mu.Unlock()
 		h.startWorkspaceDiscovery(params)
+		h.startOptionsLoad(params)
 		return lsp.InitializeResult{
 			Capabilities: lsp.ServerCapabilities{
 				TextDocumentSync:          1,

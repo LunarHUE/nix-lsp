@@ -53,6 +53,11 @@
           "type": "string",
           "default": "nixls",
           "description": "Path to the nixls server binary. Use an absolute path to your built ./nixls, or leave as \"nixls\" to resolve it from PATH."
+        },
+        "nixls.optionsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a decompressed options.json for NixOS option hover. \"off\" disables the feature; empty auto-downloads the dataset for the locked nixpkgs channel and caches it under the user cache dir."
         }
       }
     }

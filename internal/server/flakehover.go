@@ -27,27 +27,31 @@ type MarkupContent struct {
 	Value string `json:"value"`
 }
 
-// hover answers textDocument/hover. It serves flake-input hovers only, and only
-// for the workspace root flake.nix; every other file or position returns null.
+// hover answers textDocument/hover. It serves flake-input hovers for the
+// workspace root flake.nix and NixOS option-documentation hovers for any .nix
+// file; every other position returns null.
 func (h *Handler) hover(ctx context.Context, params json.RawMessage) (any, error) {
 	var decoded textDocumentPositionParams
 	if err := json.Unmarshal(params, &decoded); err != nil {
 		return nil, nil
 	}
-	fileID, ok := h.rootFlakeInputForURI(decoded.TextDocument.URI)
-	if !ok {
-		return nil, nil
-	}
-	model, err := facts.FlakeModel(ctx, h.memo, fileID)
-	if err != nil || model == nil {
-		return nil, nil
-	}
-	lock, hasLock, err := facts.FlakeLock(ctx, h.memo)
-	if err != nil {
-		return nil, nil
-	}
 	pos := syntax.Position{Line: decoded.Position.Line, Character: decoded.Position.Character}
-	if hover := flakeHoverAt(model, lock, hasLock, pos); hover != nil {
+
+	// Flake-input hover fires only for the workspace root flake.nix; keep it first
+	// so input hovers there never regress. A miss falls through to option hover.
+	if fileID, ok := h.rootFlakeInputForURI(decoded.TextDocument.URI); ok {
+		if model, err := facts.FlakeModel(ctx, h.memo, fileID); err == nil && model != nil {
+			if lock, hasLock, err := facts.FlakeLock(ctx, h.memo); err == nil {
+				if hover := flakeHoverAt(model, lock, hasLock, pos); hover != nil {
+					return hover, nil
+				}
+			}
+		}
+	}
+
+	// Any other file (and the root flake.nix when no input matched) falls through
+	// to NixOS option-documentation hover.
+	if hover := h.optionHover(ctx, decoded.TextDocument.URI, pos); hover != nil {
 		return hover, nil
 	}
 	return nil, nil

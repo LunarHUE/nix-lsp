@@ -25,6 +25,10 @@ func main() {
 	}
 
 	handler := server.NewHandler()
+	// Enable the NixOS option-hover dataset auto-download for the real server; the
+	// default (empty optionsPath) mode fetches and caches it for the locked
+	// nixpkgs channel. Explicit-path and "off" modes are unaffected.
+	handler.EnableOptionsDownload()
 	defer handler.Close()
 
 	lspServer := lsp.NewServer(os.Stdin, os.Stdout, handler)
