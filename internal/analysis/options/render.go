@@ -6,8 +6,28 @@ import "strings"
 // description, a Type line, optional Default and Example blocks, and the
 // declaration list, separated by blank lines. Empty Default/Example blocks are
 // omitted. A read-only option gets a " *(read only)*" suffix on the Type line.
+// The header names the declared Loc, so wildcard docs show their <name>/*
+// placeholders (escaped); prefer MarkdownFor when the concrete hovered path is
+// known.
 func (d *Doc) Markdown() string {
-	blocks := []string{"**" + strings.Join(d.Loc, ".") + "**"}
+	return d.markdown(d.Loc)
+}
+
+// MarkdownFor renders the Doc like Markdown, but the header names the concrete
+// path the user hovered instead of the declared Loc, so a wildcard doc shows
+// the user's own instance name (systemd.services.demo-web.description rather
+// than systemd.services.<name>.description). An empty path falls back to the
+// declared Loc.
+func (d *Doc) MarkdownFor(path []string) string {
+	if len(path) == 0 {
+		return d.markdown(d.Loc)
+	}
+	return d.markdown(path)
+}
+
+// markdown renders the Doc body under a bold header naming path.
+func (d *Doc) markdown(path []string) string {
+	blocks := []string{"**" + escapeHeader(strings.Join(path, ".")) + "**"}
 
 	if desc := strings.TrimRight(d.Description, " \t\r\n"); desc != "" {
 		blocks = append(blocks, desc)
@@ -30,6 +50,14 @@ func (d *Doc) Markdown() string {
 	}
 
 	return strings.Join(blocks, "\n\n")
+}
+
+// escapeHeader backslash-escapes angle brackets so a <name> or <literal>
+// placeholder in the header renders as literal text; unescaped, markdown
+// renderers treat it as an HTML tag and strip it, leaving a confusing "..".
+func escapeHeader(s string) string {
+	s = strings.ReplaceAll(s, "<", `\<`)
+	return strings.ReplaceAll(s, ">", `\>`)
 }
 
 // renderValueBlock renders a labelled default/example value. Markdown text is

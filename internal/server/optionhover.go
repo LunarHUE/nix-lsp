@@ -12,9 +12,12 @@ import (
 
 // optionHover answers a NixOS option-documentation hover for any workspace .nix
 // file. It resolves the static option attribute path under pos from the parsed
-// tree, looks it up in the loaded options index, and renders the doc as markdown.
-// It returns nil when the index is not loaded, the position is not on a static
-// option path, or the path is not a known option, so the hover degrades to null.
+// tree, looks it up in the loaded options index (falling back to the nearest
+// documented prefix, so hovering a wildcard instance segment like
+// systemd.services.demo-web shows the attrsOf doc), and renders the doc as
+// markdown headed by the concrete matched path. It returns nil when the index is
+// not loaded, the position is not on a static option path, or no prefix of the
+// path is a known option, so the hover degrades to null.
 func (h *Handler) optionHover(ctx context.Context, uri string, pos syntax.Position) *Hover {
 	index := h.optionsSnapshot()
 	if index == nil {
@@ -32,12 +35,14 @@ func (h *Handler) optionHover(ctx context.Context, uri string, pos syntax.Positi
 	if !ok {
 		return nil
 	}
-	doc, ok := index.Lookup(path)
+	doc, matched, ok := index.LookupNearest(path)
 	if !ok {
 		return nil
 	}
+	// The hover range stays the hovered segment even when a shorter prefix
+	// matched; the header names the matched path so it never overclaims.
 	return &Hover{
-		Contents: MarkupContent{Kind: "markdown", Value: doc.Markdown()},
+		Contents: MarkupContent{Kind: "markdown", Value: doc.MarkdownFor(matched)},
 		Range:    toProtocolRange(r),
 	}
 }

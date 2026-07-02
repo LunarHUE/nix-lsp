@@ -131,6 +131,22 @@ func (ix *Index) Lookup(path []string) (*Doc, bool) {
 	return lookup(ix.root, path)
 }
 
+// LookupNearest resolves an attribute path to its Doc, falling back to the
+// longest strict prefix that is a documented option when the full path misses.
+// This serves hovers on wildcard instance segments: [systemd services demo-web]
+// matches into the trie but the <name> node holds no doc, so the fallback finds
+// the systemd.services attrsOf doc instead. matched is the (sub)path that
+// actually resolved, so a renderer can honestly name what is documented. It
+// reports ok=false when no prefix (length >= 1) resolves.
+func (ix *Index) LookupNearest(path []string) (*Doc, []string, bool) {
+	for end := len(path); end >= 1; end-- {
+		if doc, ok := ix.Lookup(path[:end]); ok {
+			return doc, path[:end], true
+		}
+	}
+	return nil, nil, false
+}
+
 func lookup(n *node, path []string) (*Doc, bool) {
 	if len(path) == 0 {
 		if n.doc != nil {

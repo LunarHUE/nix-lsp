@@ -150,6 +150,40 @@
     "readOnly": false,
     "type": "list of package"
   },
+  "systemd.services": {
+    "declarations": [
+      "nixos/modules/system/boot/systemd.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "{ }"
+    },
+    "description": "Definition of systemd service units.\n",
+    "loc": [
+      "systemd",
+      "services"
+    ],
+    "readOnly": false,
+    "type": "attribute set of (submodule)"
+  },
+  "systemd.services.<name>.description": {
+    "declarations": [
+      "nixos/modules/system/boot/systemd.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "\"\""
+    },
+    "description": "Description of this unit used in systemd messages and progress indicators.\n",
+    "loc": [
+      "systemd",
+      "services",
+      "<name>",
+      "description"
+    ],
+    "readOnly": false,
+    "type": "string"
+  },
   "systemd.services.<name>.serviceConfig": {
     "declarations": [
       "nixos/modules/system/boot/systemd.nix"

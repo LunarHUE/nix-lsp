@@ -22,8 +22,8 @@ func loadFixture(t *testing.T) *Index {
 
 func TestParseCount(t *testing.T) {
 	ix := loadFixture(t)
-	if got := ix.Len(); got != 11 {
-		t.Fatalf("Len = %d, want 11", got)
+	if got := ix.Len(); got != 13 {
+		t.Fatalf("Len = %d, want 13", got)
 	}
 }
 
@@ -95,6 +95,65 @@ func TestLookupWildcard(t *testing.T) {
 	}
 }
 
+func TestLookupNearest(t *testing.T) {
+	ix := loadFixture(t)
+	cases := []struct {
+		name        string
+		path        []string
+		wantOK      bool
+		wantMatched []string
+	}{
+		{
+			name:        "exact hit matches the full path",
+			path:        []string{"networking", "firewall", "enable"},
+			wantOK:      true,
+			wantMatched: []string{"networking", "firewall", "enable"},
+		},
+		{
+			name:        "instance segment falls back to the attrsOf prefix",
+			path:        []string{"systemd", "services", "demo-web"},
+			wantOK:      true,
+			wantMatched: []string{"systemd", "services"},
+		},
+		{
+			name:   "total miss (no documented prefix)",
+			path:   []string{"networking"},
+			wantOK: false,
+		},
+		{
+			name:   "garbage path",
+			path:   []string{"no", "such", "option"},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, matched, ok := ix.LookupNearest(tc.path)
+			if ok != tc.wantOK {
+				t.Fatalf("LookupNearest(%v) ok = %v, want %v", tc.path, ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if doc == nil {
+				t.Fatalf("LookupNearest(%v) doc = nil with ok = true", tc.path)
+			}
+			if !slices.Equal(matched, tc.wantMatched) {
+				t.Errorf("matched = %v, want %v", matched, tc.wantMatched)
+			}
+		})
+	}
+
+	// The instance-segment fallback resolves to the systemd.services doc itself.
+	doc, _, ok := ix.LookupNearest([]string{"systemd", "services", "demo-web"})
+	if !ok {
+		t.Fatal("systemd.services.demo-web did not fall back to a prefix")
+	}
+	if !strings.Contains(doc.Description, "service units") {
+		t.Errorf("fallback doc description = %q, want the systemd.services doc", doc.Description)
+	}
+}
+
 func TestLookupExactOverWildcard(t *testing.T) {
 	const src = `{
       "a.<name>.x": {"type":"wild","loc":["a","<name>","x"],"declarations":["wild.nix"]},
@@ -154,6 +213,40 @@ func TestMarkdownGoldenWithExample(t *testing.T) {
 		"*Declared in:* `nixos/modules/services/networking/firewall.nix`"
 	if got := doc.Markdown(); got != want {
 		t.Errorf("Markdown mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestMarkdownForGoldenConcreteInstance(t *testing.T) {
+	ix := loadFixture(t)
+	doc, ok := ix.Lookup([]string{"systemd", "services", "demo-web", "description"})
+	if !ok {
+		t.Fatal("systemd.services.demo-web.description not resolved via <name>")
+	}
+	want := "**systemd.services.demo-web.description**\n\n" +
+		"Description of this unit used in systemd messages and progress indicators.\n\n" +
+		"*Type:* `string`\n\n" +
+		"*Default:*\n```nix\n\"\"\n```\n\n" +
+		"*Declared in:* `nixos/modules/system/boot/systemd.nix`"
+	got := doc.MarkdownFor([]string{"systemd", "services", "demo-web", "description"})
+	if got != want {
+		t.Errorf("MarkdownFor mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestMarkdownEscapesWildcardHeader(t *testing.T) {
+	ix := loadFixture(t)
+	doc, ok := ix.Lookup([]string{"users", "users", "<name>", "home"})
+	if !ok {
+		t.Fatal("users.users.<name>.home not found")
+	}
+	got := doc.Markdown()
+	// The placeholder must survive markdown rendering as literal text, not be
+	// stripped as an HTML tag, so the header carries backslash-escaped brackets.
+	if !strings.HasPrefix(got, `**users.users.\<name\>.home**`) {
+		t.Errorf("Markdown header = %q, want escaped \\<name\\> placeholder", got[:min(len(got), 40)])
+	}
+	if strings.Contains(got, "**users.users.<name>.home**") {
+		t.Errorf("Markdown header carries a raw <name> tag:\n%s", got)
 	}
 }
 

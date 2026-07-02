@@ -50,8 +50,8 @@ func TestOptionsLoadFromFixture(t *testing.T) {
 	if index == nil {
 		t.Fatal("optionsSnapshot = nil, want loaded index")
 	}
-	if got := index.Len(); got != 11 {
-		t.Errorf("index.Len() = %d, want 11", got)
+	if got := index.Len(); got != 13 {
+		t.Errorf("index.Len() = %d, want 13", got)
 	}
 }
 
@@ -207,5 +207,61 @@ func TestHandlerHoverOptionOnValueReturnsNull(t *testing.T) {
 	line, char := posOf(t, modFixture, "22", 0)
 	if hover := requestHover(t, handler, modURI, line, char); hover != nil {
 		t.Fatalf("hover on value = %+v, want null", hover)
+	}
+}
+
+func TestHandlerHoverOptionInstanceSegmentFallsBackToPrefix(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	const mod = "{ config, ... }: { systemd.services.demo-web.serviceConfig = {}; }"
+	root := t.TempDir()
+	modPath := filepath.Join(root, "mod.nix")
+	writeFile(t, modPath, mod)
+	initWithOptions(t, handler, root, optionsFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, mod)
+
+	// `demo-web` names a wildcard instance: no doc at the <name> node, so the
+	// hover falls back to the systemd.services attrsOf doc and says so honestly.
+	line, char := posOf(t, mod, "demo-web", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover on instance segment = null, want attrsOf prefix hover")
+	}
+	value := hover.Contents.Value
+	if !strings.Contains(value, "**systemd.services**") {
+		t.Errorf("hover header does not name the matched prefix:\n%s", value)
+	}
+	if !strings.Contains(value, "service units") {
+		t.Errorf("hover value missing the systemd.services description:\n%s", value)
+	}
+}
+
+func TestHandlerHoverOptionWildcardHeaderUsesInstanceName(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	const mod = "{ config, ... }: { systemd.services.demo-web = { description = \"demo\"; }; }"
+	root := t.TempDir()
+	modPath := filepath.Join(root, "mod.nix")
+	writeFile(t, modPath, mod)
+	initWithOptions(t, handler, root, optionsFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, mod)
+
+	// `description` resolves through the <name> wildcard; the header must carry
+	// the user's own instance name, never a stripped-placeholder "..".
+	line, char := posOf(t, mod, "description", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover on wildcard-resolved option = null, want doc hover")
+	}
+	value := hover.Contents.Value
+	if !strings.Contains(value, "**systemd.services.demo-web.description**") {
+		t.Errorf("hover header does not name the concrete instance:\n%s", value)
+	}
+	if strings.Contains(value, "..") {
+		t.Errorf("hover header carries a stripped-placeholder \"..\":\n%s", value)
 	}
 }
