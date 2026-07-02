@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "packages": {
+    "claude-code": {
+      "name": "claude-code-2.1.193",
+      "pname": "claude-code",
+      "version": "2.1.193",
+      "meta": {
+        "description": "Agentic coding tool that lives in your terminal",
+        "homepage": "https://github.com/anthropics/claude-code"
+      }
+    },
+    "htop": {
+      "name": "htop-3.5.1",
+      "pname": "htop",
+      "version": "3.5.1",
+      "meta": {
+        "description": "Interactive process viewer",
+        "homepage": "https://htop.dev"
+      }
+    },
+    "git": {
+      "name": "git-2.49.0",
+      "pname": "git",
+      "version": "2.49.0",
+      "meta": {
+        "description": "Distributed version control system"
+      }
+    },
+    "python312Packages.requests": {
+      "name": "python3.12-requests-2.32.3",
+      "pname": "python3.12-requests",
+      "version": "2.32.3",
+      "meta": {
+        "description": "HTTP library for Python",
+        "homepage": "https://requests.readthedocs.io"
+      }
+    },
+    "hello": {
+      "name": "hello-2.12.1",
+      "pname": "hello",
+      "version": "2.12.1",
+      "meta": {
+        "description": "Program that produces a familiar, friendly greeting",
+        "homepage": ["https://www.gnu.org/software/hello/", "https://example.org/mirror"]
+      }
+    },
+    "broken": [1, 2, 3]
+  }
+}

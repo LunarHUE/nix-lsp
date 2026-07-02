@@ -14,6 +14,7 @@ import (
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/options"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/packages"
 	"github.com/wesleybaldwin/nix-lsp/internal/lsp"
 	"github.com/wesleybaldwin/nix-lsp/internal/memo"
 	"github.com/wesleybaldwin/nix-lsp/internal/project"
@@ -62,6 +63,14 @@ type Handler struct {
 	optionsDownloadEnabled bool
 	optionsCtx             context.Context
 	optionsCancel          context.CancelFunc
+
+	// packages holds the channel packages dataset for package-version hover. It
+	// mirrors the options fields: packagesIndex is swapped atomically once a load
+	// publishes it, and packagesOnce guards the single load kicked off from
+	// initialize. Auto mode reuses optionsDownloadEnabled (the one download gate)
+	// and optionsCtx (cancelled by Close).
+	packagesIndex atomic.Pointer[packages.Index]
+	packagesOnce  sync.Once
 }
 
 // NewHandler creates a handler with empty in-memory state.
@@ -125,6 +134,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		h.mu.Unlock()
 		h.startWorkspaceDiscovery(params)
 		h.startOptionsLoad(params)
+		h.startPackagesLoad(params)
 		return lsp.InitializeResult{
 			Capabilities: lsp.ServerCapabilities{
 				TextDocumentSync:          1,

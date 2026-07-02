@@ -131,6 +131,35 @@ func TestHandlerHoverLockedInputName(t *testing.T) {
 	}
 }
 
+func TestHandlerHoverInputShowsOriginalRef(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	// A lock whose nixpkgs node carries an original ref (the pinned channel). The
+	// hover surfaces it as a `ref:` line alongside the locked rev.
+	lock := `{
+  "version": 7,
+  "root": "root",
+  "nodes": {
+    "root": { "inputs": { "nixpkgs": "nixpkgs" } },
+    "nixpkgs": {
+      "locked": { "type": "github", "owner": "NixOS", "repo": "nixpkgs", "rev": "abcdef0123456789aaaaaaaaaaaaaaaaaaaaaaaa" },
+      "original": { "type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-25.05" }
+    }
+  }
+}`
+	_, flakeURI := flakeWorkspace(t, handler, lock)
+
+	line, char := posOf(t, flakeFixture, "nixpkgs", 0)
+	hover := requestHover(t, handler, flakeURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want input hover with ref")
+	}
+	if !strings.Contains(hover.Contents.Value, "ref: `nixos-25.05`") {
+		t.Errorf("hover missing 'ref: `nixos-25.05`':\n%s", hover.Contents.Value)
+	}
+}
+
 func TestHandlerHoverUnlockedInput(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()

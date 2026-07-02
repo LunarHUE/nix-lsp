@@ -49,8 +49,12 @@ func (h *Handler) hover(ctx context.Context, params json.RawMessage) (any, error
 		}
 	}
 
-	// Any other file (and the root flake.nix when no input matched) falls through
-	// to NixOS option-documentation hover.
+	// Package-version hover for a `pkgs.<attr>` select, then NixOS
+	// option-documentation hover. The two cannot both match a position: option
+	// paths never start at a `pkgs` select base.
+	if hover := h.packageHover(ctx, decoded.TextDocument.URI, pos); hover != nil {
+		return hover, nil
+	}
 	if hover := h.optionHover(ctx, decoded.TextDocument.URI, pos); hover != nil {
 		return hover, nil
 	}
@@ -197,7 +201,16 @@ func writeLockSection(b *strings.Builder, name string, lock *flake.Lock) {
 		return
 	}
 	node, ok := lock.Nodes[ref.Key]
-	if !ok || node.Locked == nil {
+	if !ok {
+		return
+	}
+	// A flake.lock pins a revision, not a version; the original ref is the honest
+	// answer to "what does this input track" when the pin names a channel or tag
+	// (e.g. `nixos-25.05`, `v1.17.4`).
+	if node.Original != nil && node.Original.Ref != "" {
+		fmt.Fprintf(b, "\n- ref: `%s`", node.Original.Ref)
+	}
+	if node.Locked == nil {
 		return
 	}
 	locked := node.Locked

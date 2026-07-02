@@ -5,13 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"time"
-
-	"github.com/andybalholm/brotli"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/flake"
@@ -33,11 +30,12 @@ const (
 // or "nixos-unstable"; anything else falls back to the unstable channel.
 var optionsChannelPattern = regexp.MustCompile(`^nixos-[a-z0-9.]+$`)
 
-// initializeOptionsParams decodes only the option-hover setting from the
-// initialize params' initializationOptions.
+// initializeOptionsParams decodes the dataset-hover settings from the initialize
+// params' initializationOptions: the option-hover path and the package-hover path.
 type initializeOptionsParams struct {
 	InitializationOptions struct {
-		OptionsPath string `json:"optionsPath"`
+		OptionsPath  string `json:"optionsPath"`
+		PackagesPath string `json:"packagesPath"`
 	} `json:"initializationOptions"`
 }
 
@@ -54,10 +52,11 @@ func initializeOptionsPath(params json.RawMessage) string {
 	return decoded.InitializationOptions.OptionsPath
 }
 
-// EnableOptionsDownload turns on auto-download of the NixOS options dataset for
-// the default (empty optionsPath) mode. The real server enables it; tests leave
-// it off so no test performs network I/O. Explicit-path and "off" modes are
-// unaffected.
+// EnableOptionsDownload turns on auto-download of both auto-loaded datasets (the
+// NixOS options and the channel packages) for their default (empty path) modes.
+// The name predates the packages dataset; the single switch gates both. The real
+// server enables it; tests leave it off so no test performs network I/O.
+// Explicit-path and "off" modes are unaffected.
 func (h *Handler) EnableOptionsDownload() {
 	h.mu.Lock()
 	h.optionsDownloadEnabled = true
@@ -219,60 +218,30 @@ func optionsChannel(lock *flake.Lock, hasLock bool) string {
 }
 
 // optionsCacheFresh reports whether a cache file last modified at modTime is still
-// within the TTL window at now.
+// within the options TTL window at now. It is a thin wrapper over the shared
+// cacheFresh so the options and packages loaders share one freshness rule.
 func optionsCacheFresh(modTime, now time.Time) bool {
-	return now.Sub(modTime) < optionsCacheTTL
+	return cacheFresh(modTime, now, optionsCacheTTL)
 }
 
 // downloadOptions fetches and brotli-decompresses the options.json artifact for
-// channel. It follows redirects (the channels host 302s to a pinned release), is
-// a single attempt bounded by ctx and a 60s timeout, and returns the decompressed
-// JSON. It is never exercised in tests (no test performs network I/O).
+// channel, returning the whole decompressed JSON. It is a single attempt bounded
+// by ctx and the options timeout. It is never exercised in tests (no test
+// performs network I/O).
 func downloadOptions(ctx context.Context, channel string) ([]byte, error) {
 	url := "https://channels.nixos.org/" + channel + "/options.json.br"
-	reqCtx, cancel := context.WithTimeout(ctx, optionsDownloadTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	r, cleanup, err := fetchBrotli(ctx, url, optionsDownloadTimeout)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %s", resp.Status)
-	}
-	return io.ReadAll(brotli.NewReader(resp.Body))
+	defer cleanup()
+	return io.ReadAll(r)
 }
 
-// writeOptionsCache writes the decompressed dataset to path atomically: it creates
-// the parent directory, writes a sibling temp file, then renames it into place.
+// writeOptionsCache writes the decompressed options dataset to path atomically via
+// the shared cache writer.
 func writeOptionsCache(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, "options-*.json.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return writeCacheFileAtomic(path, data)
 }
 
 // logOptions writes a single diagnostic line to stderr for an options-loading
