@@ -69,6 +69,11 @@
           "type": "string",
           "default": "",
           "description": "Path to a decompressed options.json for NixOS option hover. \"off\" disables the feature; empty auto-downloads the dataset for the locked nixpkgs channel and caches it under the user cache dir."
+        },
+        "nixls.packagesPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a decompressed packages.json for package version hover. \"off\" disables the feature; empty auto-downloads the dataset for the locked nixpkgs channel and caches a trimmed extract under the user cache dir."
         }
       }
     }

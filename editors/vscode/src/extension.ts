@@ -22,10 +22,12 @@ function createClient(watchers: vscode.FileSystemWatcher[]): LanguageClient {
   const command =
     configured && configured.trim().length > 0 ? configured : "nixls";
 
-  // nixls.optionsPath forwards to the server as initializationOptions.optionsPath:
-  // a local decompressed options.json for NixOS option hover, "off" to disable, or
-  // empty to auto-download and cache for the locked nixpkgs channel.
+  // nixls.optionsPath / nixls.packagesPath forward to the server as
+  // initializationOptions: a local dataset file for NixOS option / package
+  // hover, "off" to disable, or empty to auto-download and cache for the
+  // locked nixpkgs channel.
   const optionsPath = nixlsConfig.get<string>("optionsPath") ?? "";
+  const packagesPath = nixlsConfig.get<string>("packagesPath") ?? "";
 
   // The server speaks LSP/JSON-RPC over stdio; no arguments are required to
   // start it. Point nixls.serverPath at your built ./nixls binary.
@@ -44,7 +46,7 @@ function createClient(watchers: vscode.FileSystemWatcher[]): LanguageClient {
     synchronize: {
       fileEvents: watchers,
     },
-    initializationOptions: { optionsPath },
+    initializationOptions: { optionsPath, packagesPath },
   };
 
   return new LanguageClient("nixls", "nixls", serverOptions, clientOptions);
