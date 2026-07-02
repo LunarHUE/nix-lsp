@@ -58,6 +58,12 @@ func (h *Handler) hover(ctx context.Context, params json.RawMessage) (any, error
 	if hover := h.optionHover(ctx, decoded.TextDocument.URI, pos); hover != nil {
 		return hover, nil
 	}
+	// Binding-value hover is the final fallback: it shows what a locally bound
+	// identifier is bound to. It must run last so the flake, package, and option
+	// hovers above always win a shared position.
+	if hover := h.valueHover(ctx, decoded.TextDocument.URI, pos); hover != nil {
+		return hover, nil
+	}
 	return nil, nil
 }
 

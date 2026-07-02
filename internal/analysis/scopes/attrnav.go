@@ -52,6 +52,54 @@ func BindingValueRange(tree *syntax.Tree, b *Binding) (syntax.Range, bool) {
 	return result, found
 }
 
+// BindingValueSource returns the source text of the value expression of the
+// binding that introduced b, located the same way as BindingValueRange. It is
+// the building block for binding-value hover, which shows the bound expression
+// verbatim: this is the source text of the expression, never an evaluated value.
+func BindingValueSource(tree *syntax.Tree, b *Binding) (string, bool) {
+	r, ok := BindingValueRange(tree, b)
+	if !ok {
+		return "", false
+	}
+	node := nodeWithRange(tree, r)
+	if node.IsZero() {
+		return "", false
+	}
+	return node.Text(), true
+}
+
+// FormalDefaultSource returns the source text of the default expression of a
+// formal parameter binding (`{ x ? 42 }:` -> "42"), or false when b is not a
+// formal, the formal has no default, or the formal cannot be located. It locates
+// the CST `formal` node whose name spans b's name.
+func FormalDefaultSource(tree *syntax.Tree, b *Binding) (string, bool) {
+	if tree == nil || b == nil || b.Kind != FormalParam {
+		return "", false
+	}
+	var result string
+	found := false
+	tree.Walk(func(node syntax.Node) bool {
+		if found {
+			return false
+		}
+		if node.Kind() != "formal" {
+			return true
+		}
+		name := node.ChildByFieldName("name")
+		if name.IsZero() || !rangeContains(name.Range(), b.NameRange.Start) {
+			return true
+		}
+		found = true
+		def := node.ChildByFieldName("default")
+		if def.IsZero() {
+			return false
+		}
+		result = def.Text()
+		return false
+	})
+	return result, found && result != ""
+}
+
 // ResolveAttrPath resolves a static attribute path against the file's top-level
 // value, unwrapping through function bodies, parentheses, and let-in bodies
 // until an attribute set is reached. It returns the range of the definition the
