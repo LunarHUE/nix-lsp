@@ -221,6 +221,89 @@ func TestImportEdgesGetterReturnsTypedEdgesThroughMemo(t *testing.T) {
 	}
 }
 
+// TestFlakeDiagnosticsOnlyForRootFlake verifies flake diagnostics attach to the
+// workspace root flake.nix and to no other file.
+func TestFlakeDiagnosticsOnlyForRootFlake(t *testing.T) {
+	engine := NewEngineForTest()
+	SetFlakeLock(engine, nil)
+	root := t.TempDir()
+	normRoot := normalize(t, root)
+
+	// Root flake.nix: input "other" follows undeclared "nixpkgs" -> dangling.
+	flakeSrc := `{ inputs.other.follows = "nixpkgs"; }`
+	flakePath := writeFile(t, filepath.Join(root, "flake.nix"), flakeSrc)
+	flakeID := FileID(normalize(t, flakePath), vfs.ContentHash([]byte(flakeSrc)))
+
+	// A non-flake file with identical follows content must get no flake diagnostic.
+	otherSrc := flakeSrc
+	otherPath := writeFile(t, filepath.Join(root, "other.nix"), otherSrc)
+	otherID := FileID(normalize(t, otherPath), vfs.ContentHash([]byte(otherSrc)))
+
+	SetWorkspace(engine, project.Workspace{Root: normRoot})
+	SetFileInput(engine, flakeID, FileInput{Path: normalize(t, flakePath), Content: []byte(flakeSrc)})
+	SetFileInput(engine, otherID, FileInput{Path: normalize(t, otherPath), Content: []byte(otherSrc)})
+
+	flakeDiags, err := FileDiagnostics(context.Background(), engine, flakeID)
+	if err != nil {
+		t.Fatalf("flake FileDiagnostics error = %v", err)
+	}
+	if !containsCode(flakeDiags, "dangling-follows") {
+		t.Fatalf("flake.nix diagnostics = %+v, want dangling-follows", flakeDiags)
+	}
+
+	otherDiags, err := FileDiagnostics(context.Background(), engine, otherID)
+	if err != nil {
+		t.Fatalf("other FileDiagnostics error = %v", err)
+	}
+	if containsCode(otherDiags, "dangling-follows") {
+		t.Fatalf("non-flake file got flake diagnostic: %+v", otherDiags)
+	}
+}
+
+// TestFlakeLockInvalidationChangesDiagnostics verifies that changing the lock
+// input invalidates the root flake.nix diagnostics.
+func TestFlakeLockInvalidationChangesDiagnostics(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	normRoot := normalize(t, root)
+
+	flakeSrc := `{ inputs.a.url = "u"; outputs = { self, a }: {}; }`
+	flakePath := writeFile(t, filepath.Join(root, "flake.nix"), flakeSrc)
+	flakeID := FileID(normalize(t, flakePath), vfs.ContentHash([]byte(flakeSrc)))
+
+	SetWorkspace(engine, project.Workspace{Root: normRoot})
+	SetFileInput(engine, flakeID, FileInput{Path: normalize(t, flakePath), Content: []byte(flakeSrc)})
+
+	// No lock -> input "a" reported not-locked.
+	SetFlakeLock(engine, []byte(`{"root":"root","version":7,"nodes":{"root":{}}}`))
+	diags, err := FileDiagnostics(context.Background(), engine, flakeID)
+	if err != nil {
+		t.Fatalf("FileDiagnostics error = %v", err)
+	}
+	if !containsCode(diags, "input-not-locked") {
+		t.Fatalf("diagnostics = %+v, want input-not-locked", diags)
+	}
+
+	// Now the lock locks "a" -> the warning disappears (input invalidation).
+	SetFlakeLock(engine, []byte(`{"root":"root","version":7,"nodes":{"root":{"inputs":{"a":"a"}},"a":{}}}`))
+	diags2, err := FileDiagnostics(context.Background(), engine, flakeID)
+	if err != nil {
+		t.Fatalf("second FileDiagnostics error = %v", err)
+	}
+	if containsCode(diags2, "input-not-locked") {
+		t.Fatalf("input-not-locked persisted after locking: %+v", diags2)
+	}
+}
+
+func containsCode(diags []syntax.Diagnostic, code string) bool {
+	for _, d := range diags {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func NewEngineForTest() *memo.Engine {
 	engine := memo.New()
 	Register(engine)

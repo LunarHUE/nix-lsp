@@ -135,6 +135,16 @@ untracked) import target has no fix, since `git add` cannot conjure the file.
   `callPackage` targets), with a **Run git add** quick fix for the untracked case.
 - Binding diagnostics: unused bindings (warning), plus duplicate and
   bad-`inherit` bindings (error).
+- Flake diagnostics on the workspace root `flake.nix`: a `follows` target that
+  names no declared input (`dangling-follows`, error), a declared input missing
+  from `flake.lock` (`input-not-locked`, warning), a `flake.lock` entry with no
+  matching input (`stale-lock-entry`, warning), and an input never consumed by
+  `outputs` (`unused-input`, warning). These are deliberately conservative:
+  only the root `flake.nix` is analyzed, only static string URLs/targets are
+  read (interpolated or dynamic values are ignored), the lock-dependent checks
+  run only when a parseable `flake.lock` is present, and `unused-input` fires
+  only when `outputs` uses a strict destructured signature with no `...` and no
+  `@`-pattern (so `self` and follows-referenced inputs are never flagged).
 - Document symbols (outline), go-to-definition, find-all-references, folding
   ranges, and document highlights.
 - Workspace symbol search (`Ctrl+T`) over let/rec/attribute bindings in every

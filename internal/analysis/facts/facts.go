@@ -4,7 +4,9 @@ package facts
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/flake"
 	importedges "github.com/wesleybaldwin/nix-lsp/internal/analysis/imports"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/scopes"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/static"
@@ -20,9 +22,15 @@ const (
 	QueryImportEdges     = "ImportEdges"
 	QueryScopes          = "Scopes"
 	QueryFileDiagnostics = "FileDiagnostics"
+	QueryFlakeLock       = "FlakeLock"
+	QueryFlakeModel      = "FlakeModel"
 )
 
 const workspaceInputID = "current"
+
+// flakeLockInputID keys the single current flake.lock input, mirroring the
+// workspace singleton-input pattern.
+const flakeLockInputID = "current"
 
 // fileIDSeparator joins a file's path and content hash into a single memo key
 // ID. Path is a genuine input to path-dependent queries (relative import
@@ -49,12 +57,20 @@ func Register(engine *memo.Engine) {
 	engine.Register(QueryParseTree, parseTree)
 	engine.Register(QueryImportEdges, importEdges)
 	engine.Register(QueryScopes, scopesQuery)
+	engine.Register(QueryFlakeModel, flakeModel)
 	engine.Register(QueryFileDiagnostics, fileDiagnostics)
 }
 
 // SetWorkspace stores the current workspace input.
 func SetWorkspace(engine *memo.Engine, workspace project.Workspace) {
 	engine.SetInput(WorkspaceKey(), workspace)
+}
+
+// SetFlakeLock stores the raw flake.lock bytes as the current lock input. An
+// absent lock file is represented by nil content. The bytes are cloned so the
+// DeepEqual input dedup keys on content.
+func SetFlakeLock(engine *memo.Engine, content []byte) {
+	engine.SetInput(FlakeLockKey(), cloneBytes(content))
 }
 
 // SetFileInput stores the current file input for fileID. fileID must be a
@@ -67,6 +83,16 @@ func SetFileInput(engine *memo.Engine, fileID string, input FileInput) {
 // WorkspaceKey returns the current workspace input key.
 func WorkspaceKey() memo.Key {
 	return memo.Key{Kind: QueryWorkspace, ID: workspaceInputID}
+}
+
+// FlakeLockKey returns the current flake.lock input key.
+func FlakeLockKey() memo.Key {
+	return memo.Key{Kind: QueryFlakeLock, ID: flakeLockInputID}
+}
+
+// FlakeModelKey returns the flake input-model query key for fileID.
+func FlakeModelKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryFlakeModel, ID: fileID}
 }
 
 // FileInputKey returns the file input key for fileID.
@@ -152,6 +178,20 @@ func ParseTree(ctx context.Context, engine *memo.Engine, fileID string) (*syntax
 	return tree, nil
 }
 
+// FlakeModel reads the flake input model for fileID from the memo engine.
+// fileID must be a composite produced by FileID(path, hash).
+func FlakeModel(ctx context.Context, engine *memo.Engine, fileID string) (*flake.File, error) {
+	value, err := engine.Get(ctx, FlakeModelKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	model, ok := value.(*flake.File)
+	if !ok {
+		return nil, fmt.Errorf("facts: FlakeModel returned %T", value)
+	}
+	return model, nil
+}
+
 func parseTree(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
 	input, err := getFileInput(ctx, q, key.ID)
 	if err != nil {
@@ -184,7 +224,19 @@ func scopesQuery(ctx context.Context, q *memo.Context, key memo.Key) (any, error
 	return scopes.Analyze(tree), nil
 }
 
+func flakeModel(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
+	tree, err := getParseTree(ctx, q, key.ID)
+	if err != nil {
+		return nil, err
+	}
+	return flake.AnalyzeInputs(tree), nil
+}
+
 func fileDiagnostics(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
+	input, err := getFileInput(ctx, q, key.ID)
+	if err != nil {
+		return nil, err
+	}
 	tree, err := getParseTree(ctx, q, key.ID)
 	if err != nil {
 		return nil, err
@@ -205,7 +257,35 @@ func fileDiagnostics(ctx context.Context, q *memo.Context, key memo.Key) (any, e
 	diagnostics := tree.Diagnostics()
 	diagnostics = append(diagnostics, static.ImportDiagnostics(workspace, edges)...)
 	diagnostics = append(diagnostics, static.BindingDiagnostics(file, tree)...)
+
+	// Only the workspace root flake.nix carries flake diagnostics.
+	if workspace.Root != "" && input.Path == filepath.Join(workspace.Root, "flake.nix") {
+		model, err := getFlakeModel(ctx, q, key.ID)
+		if err != nil {
+			return nil, err
+		}
+		lockBytes, err := getFlakeLock(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		lock, hasLock := parseFlakeLock(lockBytes)
+		diagnostics = append(diagnostics, flake.Diagnostics(model, lock, hasLock)...)
+	}
 	return diagnostics, nil
+}
+
+// parseFlakeLock parses raw lock bytes tolerantly: nil/empty content or a parse
+// error yields no usable lock, which suppresses the lock-dependent diagnostics
+// rather than reporting the lock itself as broken.
+func parseFlakeLock(content []byte) (*flake.Lock, bool) {
+	if len(content) == 0 {
+		return nil, false
+	}
+	lock, err := flake.ParseLock(content)
+	if err != nil {
+		return nil, false
+	}
+	return lock, true
 }
 
 func getFileInput(ctx context.Context, q *memo.Context, fileID string) (FileInput, error) {
@@ -255,6 +335,33 @@ func getScopes(ctx context.Context, q *memo.Context, fileID string) (*scopes.Fil
 		return nil, fmt.Errorf("facts: Scopes returned %T", value)
 	}
 	return file, nil
+}
+
+func getFlakeModel(ctx context.Context, q *memo.Context, fileID string) (*flake.File, error) {
+	value, err := q.Get(ctx, FlakeModelKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	model, ok := value.(*flake.File)
+	if !ok {
+		return nil, fmt.Errorf("facts: FlakeModel returned %T", value)
+	}
+	return model, nil
+}
+
+func getFlakeLock(ctx context.Context, q *memo.Context) ([]byte, error) {
+	value, err := q.Get(ctx, FlakeLockKey())
+	if err != nil {
+		return nil, err
+	}
+	if value == nil {
+		return nil, nil
+	}
+	content, ok := value.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("facts: FlakeLock returned %T", value)
+	}
+	return content, nil
 }
 
 func getImportEdges(ctx context.Context, q *memo.Context, fileID string) ([]importedges.Edge, error) {

@@ -309,6 +309,65 @@ func TestHandlerWatchedFilesGitTrackRefreshClearsUntrackedWarning(t *testing.T) 
 	waitForPublish(t, notifier, importerURI, 0)
 }
 
+func TestHandlerFlakeDiagnosticsAndLockRefresh(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	notifier := &captureNotifier{messages: make(chan publishDiagnosticsParams, 64)}
+	handler.SetNotifier(notifier)
+
+	root := t.TempDir()
+	// a: locked. b: unlocked (missing from lock). c: locked but never used in the
+	// strict outputs formals. a carries a dangling follows to an undeclared input.
+	flakeSrc := "{\n" +
+		"  inputs.a.url = \"u\";\n" +
+		"  inputs.b.url = \"v\";\n" +
+		"  inputs.c.url = \"w\";\n" +
+		"  inputs.a.inputs.x.follows = \"nope\";\n" +
+		"  outputs = { self, a, b }: {};\n" +
+		"}\n"
+	flakePath := filepath.Join(root, "flake.nix")
+	writeFile(t, flakePath, flakeSrc)
+	lockPath := filepath.Join(root, "flake.lock")
+	writeFile(t, lockPath, `{"version":7,"root":"root","nodes":{"root":{"inputs":{"a":"a","c":"c"}},"a":{},"c":{}}}`)
+
+	initWorkspace(t, handler, root)
+	flakeURI := mustURI(t, flakePath)
+	openDocument(t, handler, flakeURI, flakeSrc)
+
+	// dangling-follows (nope), input-not-locked (b), unused-input (c).
+	initial := waitForPublish(t, notifier, flakeURI, 3)
+	got := publishedCodes(initial)
+	for _, code := range []string{"dangling-follows", "input-not-locked", "unused-input"} {
+		if !got[code] {
+			t.Fatalf("initial flake diagnostics missing %q: %+v", code, initial.Diagnostics)
+		}
+	}
+
+	// Rewrite the lock to also lock b, then report the lock change. b's
+	// input-not-locked warning must clear; dangling and unused remain.
+	writeFile(t, lockPath, `{"version":7,"root":"root","nodes":{"root":{"inputs":{"a":"a","b":"b","c":"c"}},"a":{},"b":{},"c":{}}}`)
+	sendWatchedFiles(t, handler, []map[string]any{{"uri": mustURI(t, lockPath), "type": 2}})
+
+	updated := waitForPublish(t, notifier, flakeURI, 2)
+	updatedCodes := publishedCodes(updated)
+	if updatedCodes["input-not-locked"] {
+		t.Fatalf("input-not-locked persisted after locking b: %+v", updated.Diagnostics)
+	}
+	for _, code := range []string{"dangling-follows", "unused-input"} {
+		if !updatedCodes[code] {
+			t.Fatalf("expected %q to remain: %+v", code, updated.Diagnostics)
+		}
+	}
+}
+
+func publishedCodes(params publishDiagnosticsParams) map[string]bool {
+	codes := make(map[string]bool)
+	for _, d := range params.Diagnostics {
+		codes[d.Code] = true
+	}
+	return codes
+}
+
 func initWorkspace(t *testing.T, handler *Handler, root string) {
 	t.Helper()
 	rootURI := mustURI(t, root)

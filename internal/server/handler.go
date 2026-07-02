@@ -56,6 +56,7 @@ func NewHandler() *Handler {
 	engine := memo.New()
 	facts.Register(engine)
 	facts.SetWorkspace(engine, project.Workspace{})
+	facts.SetFlakeLock(engine, nil)
 
 	handler := &Handler{
 		vfs:            vfs.New(),
@@ -235,6 +236,7 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 		if err == nil {
 			facts.SetWorkspace(h.memo, workspace)
 			snapshot := h.vfs.Snapshot()
+			h.refreshFlakeLock(snapshot)
 			total := len(workspace.Files)
 			lastPct := -1
 			for i, file := range workspace.Files {
@@ -401,17 +403,26 @@ func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
 
 	snapshot := h.vfs.Snapshot()
 	changes := make([]watchedFileChange, 0, len(decoded.Changes))
+	// A flake.lock change drives no per-file recompute of its own (it is JSON, not
+	// Nix); it only refreshes the lock input and the root flake.nix diagnostics.
+	lockChanged := false
 	for _, change := range decoded.Changes {
 		path, err := vfs.URIToPath(change.URI)
 		if err != nil {
 			continue
 		}
-		if filepath.Ext(path) != ".nix" {
+		isNix := filepath.Ext(path) == ".nix"
+		isLock := filepath.Base(path) == "flake.lock"
+		if !isNix && !isLock {
 			continue
 		}
 		// An open buffer overrides disk; its diagnostics are the editor's, not the
 		// filesystem's. Skip it so an external write cannot clobber the buffer.
 		if open, err := snapshot.HasOverlay(path); err != nil || open {
+			continue
+		}
+		if isLock {
+			lockChanged = true
 			continue
 		}
 		changes = append(changes, watchedFileChange{
@@ -420,7 +431,7 @@ func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
 			deleted: change.Type == fileChangeTypeDeleted,
 		})
 	}
-	if len(changes) == 0 {
+	if len(changes) == 0 && !lockChanged {
 		return nil
 	}
 
@@ -456,7 +467,13 @@ func (h *Handler) refreshWatchedFiles(ctx context.Context, root string, changes 
 	// content and open files read their current buffers.
 	snapshot := h.vfs.Snapshot()
 
+	// Refresh the flake.lock input so the root flake.nix diagnostics reflect a
+	// lock change (or any re-discovery) below.
+	h.refreshFlakeLock(snapshot)
+
+	changed := make(map[string]bool, len(changes))
 	for _, change := range changes {
+		changed[change.path] = true
 		if change.deleted {
 			// Mirror didClose: clear squiggles for a file that no longer exists.
 			h.publishEmptyDiagnostics(change.uri)
@@ -471,7 +488,35 @@ func (h *Handler) refreshWatchedFiles(ctx context.Context, root string, changes 
 	for _, open := range openFiles(snapshot) {
 		_ = h.computeFileDiagnostics(ctx, snapshot, open.uri, open.path, h.nextGeneration(), true)
 	}
+
+	// The root flake.nix flake diagnostics depend on the lock and the re-discovered
+	// workspace, so recompute it here unless it was already handled as a changed or
+	// open file above (its own generation path avoids a duplicate publish).
+	if root != "" {
+		flakePath := filepath.Join(root, "flake.nix")
+		if open, err := snapshot.HasOverlay(flakePath); err == nil && !open && !changed[flakePath] {
+			if uri, err := vfs.PathToURI(flakePath); err == nil {
+				_ = h.computeFileDiagnostics(ctx, snapshot, uri, flakePath, h.nextGeneration(), false)
+			}
+		}
+	}
 	return nil
+}
+
+// refreshFlakeLock reads flake.lock from snapshot for the known workspace root
+// and stores it as the memo lock input (nil on a missing or unreadable file).
+func (h *Handler) refreshFlakeLock(snapshot *vfs.Snapshot) {
+	h.mu.RLock()
+	root := h.workspace.Root
+	h.mu.RUnlock()
+	if root == "" {
+		return
+	}
+	var content []byte
+	if file, err := snapshot.ReadFile(filepath.Join(root, "flake.lock")); err == nil {
+		content = file.Content
+	}
+	facts.SetFlakeLock(h.memo, content)
 }
 
 // openFiles returns the open buffers in snapshot as watchedFileChange values

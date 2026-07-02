@@ -27,11 +27,14 @@ export function activate(context: vscode.ExtensionContext): void {
       { scheme: "file", language: "nix" },
       { scheme: "untitled", language: "nix" },
     ],
-    // Watch every .nix file so external changes (branch switches, git
-    // operations, out-of-editor edits) reach the server as
-    // workspace/didChangeWatchedFiles and refresh diagnostics.
+    // Watch every .nix file plus flake.lock so external changes (branch
+    // switches, git operations, out-of-editor edits, `nix flake lock`) reach the
+    // server as workspace/didChangeWatchedFiles and refresh diagnostics.
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.nix"),
+      fileEvents: [
+        vscode.workspace.createFileSystemWatcher("**/*.nix"),
+        vscode.workspace.createFileSystemWatcher("**/flake.lock"),
+      ],
     },
   };
 
