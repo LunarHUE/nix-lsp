@@ -18,6 +18,13 @@
     "onLanguage:nix"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "nixls.restart",
+        "title": "Restart Server",
+        "category": "nixls"
+      }
+    ],
     "languages": [
       {
         "id": "nix",

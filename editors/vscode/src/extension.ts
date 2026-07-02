@@ -3,12 +3,20 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
-  TransportKind,
 } from "vscode-languageclient/node";
 
 let client: LanguageClient | undefined;
+// restarting guards against overlapping restarts: a second invocation while one
+// is already in flight just returns.
+let restarting = false;
 
-export function activate(context: vscode.ExtensionContext): void {
+// createClient builds a fresh LanguageClient, reading nixls.serverPath anew on
+// every call so a rebuilt ./nixls or a changed serverPath is picked up on
+// restart without a window reload. watchers are created once in activate and
+// passed in so they survive client.stop(): the client hooks fresh change
+// listeners onto them on each start and disposes only those listeners on stop,
+// never the watchers themselves.
+function createClient(watchers: vscode.FileSystemWatcher[]): LanguageClient {
   const configured = vscode.workspace
     .getConfiguration("nixls")
     .get<string>("serverPath");
@@ -17,9 +25,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // The server speaks LSP/JSON-RPC over stdio; no arguments are required to
   // start it. Point nixls.serverPath at your built ./nixls binary.
+  // Omit `transport`: stdio is the default for executables, and naming it
+  // explicitly makes the client append a --stdio argument to the command.
   const serverOptions: ServerOptions = {
-    run: { command, transport: TransportKind.stdio },
-    debug: { command, transport: TransportKind.stdio },
+    run: { command },
+    debug: { command },
   };
 
   const clientOptions: LanguageClientOptions = {
@@ -27,32 +37,68 @@ export function activate(context: vscode.ExtensionContext): void {
       { scheme: "file", language: "nix" },
       { scheme: "untitled", language: "nix" },
     ],
-    // Watch every .nix file plus flake.lock so external changes (branch
-    // switches, git operations, out-of-editor edits, `nix flake lock`) reach the
-    // server as workspace/didChangeWatchedFiles and refresh diagnostics.
     synchronize: {
-      fileEvents: [
-        vscode.workspace.createFileSystemWatcher("**/*.nix"),
-        vscode.workspace.createFileSystemWatcher("**/flake.lock"),
-      ],
+      fileEvents: watchers,
     },
   };
 
-  client = new LanguageClient(
-    "nixls",
-    "nixls",
-    serverOptions,
-    clientOptions
-  );
+  return new LanguageClient("nixls", "nixls", serverOptions, clientOptions);
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+  // Watch every .nix file plus flake.lock so external changes (branch switches,
+  // git operations, out-of-editor edits, `nix flake lock`) reach the server as
+  // workspace/didChangeWatchedFiles and refresh diagnostics. Created once and
+  // reused across restarts; the client never disposes caller-provided watchers.
+  const watchers = [
+    vscode.workspace.createFileSystemWatcher("**/*.nix"),
+    vscode.workspace.createFileSystemWatcher("**/flake.lock"),
+  ];
+  context.subscriptions.push(...watchers);
 
   // start() returns a promise; failures (e.g. binary not found) surface in the
   // "nixls" output channel.
+  client = createClient(watchers);
   void client.start();
   context.subscriptions.push({
     dispose: () => {
       void client?.stop();
     },
   });
+
+  // nixls.restart re-reads configuration and swaps in a fresh client, so a
+  // rebuilt binary or a changed nixls.serverPath takes effect without reloading
+  // the window.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("nixls.restart", async () => {
+      if (restarting) {
+        return;
+      }
+      restarting = true;
+      try {
+        if (client) {
+          // A dead server must not block the restart, so swallow stop errors.
+          try {
+            await client.stop();
+          } catch {
+            // ignore
+          }
+          client = undefined;
+        }
+        client = createClient(watchers);
+        try {
+          await client.start();
+          vscode.window.setStatusBarMessage("nixls: server restarted", 3000);
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `nixls: failed to restart server: ${err}`
+          );
+        }
+      } finally {
+        restarting = false;
+      }
+    })
+  );
 }
 
 export function deactivate(): Thenable<void> | undefined {

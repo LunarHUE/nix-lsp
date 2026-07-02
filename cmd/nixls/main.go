@@ -14,6 +14,9 @@ var version = "dev"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	// Accepted for compatibility with LSP clients that pass --stdio; stdio is
+	// the only transport the server supports, so the flag is a no-op.
+	flag.Bool("stdio", true, "communicate over stdin/stdout (default and only transport)")
 	flag.Parse()
 
 	if *showVersion {

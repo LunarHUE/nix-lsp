@@ -1,0 +1,97 @@
+{
+  "version": 7,
+  "root": "root",
+  "nodes": {
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "home-manager": "home-manager",
+        "flake-utils": "flake-utils",
+        "demo-lib": "demo-lib",
+        "ancient": "ancient"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        "narHash": "sha256-demoNixpkgsHashPlaceholder0000000000000000=",
+        "lastModified": 1716825600
+      },
+      "original": {
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "ref": "nixos-24.05"
+      }
+    },
+    "home-manager": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "type": "github",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+        "narHash": "sha256-demoHomeManagerHashPlaceholder000000000000=",
+        "lastModified": 1717430400
+      },
+      "original": {
+        "type": "github",
+        "owner": "nix-community",
+        "repo": "home-manager"
+      }
+    },
+    "flake-utils": {
+      "locked": {
+        "type": "github",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "c3d4e5f60718293a4b5c6d7e8f90123456789012",
+        "narHash": "sha256-demoFlakeUtilsHashPlaceholder00000000000000=",
+        "lastModified": 1710979200
+      },
+      "original": {
+        "type": "github",
+        "owner": "numtide",
+        "repo": "flake-utils"
+      }
+    },
+    "demo-lib": {
+      "flake": false,
+      "locked": {
+        "type": "github",
+        "owner": "example",
+        "repo": "demo-lib",
+        "rev": "d4e5f60718293a4b5c6d7e8f9012345678901234",
+        "narHash": "sha256-demoLibHashPlaceholder0000000000000000000000=",
+        "lastModified": 1709251200
+      },
+      "original": {
+        "type": "github",
+        "owner": "example",
+        "repo": "demo-lib"
+      }
+    },
+    "ancient": {
+      "locked": {
+        "type": "github",
+        "owner": "example",
+        "repo": "ancient",
+        "rev": "e5f60718293a4b5c6d7e8f901234567890123456",
+        "narHash": "sha256-demoAncientHashPlaceholder000000000000000000=",
+        "lastModified": 1640995200
+      },
+      "original": {
+        "type": "github",
+        "owner": "example",
+        "repo": "ancient"
+      }
+    }
+  }
+}
