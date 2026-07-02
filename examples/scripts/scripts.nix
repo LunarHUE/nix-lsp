@@ -16,8 +16,8 @@
     done
   '';
 
-  # writeShellScriptBin adds the shebang itself; the `text`-style body still
-  # highlights via the attribute-name trigger.
+  # writeShellScriptBin adds the shebang at build time, so there is no #! in
+  # the body; it highlights via the writeShellScript(Bin)-call trigger instead.
   healthcheck = pkgs.writeShellScriptBin "healthcheck" ''
     if ! curl -fs http://localhost:8080/health; then
       echo "unhealthy" >&2

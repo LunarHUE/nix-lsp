@@ -36,6 +36,12 @@
           ".nix"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "json",
+        "filenames": [
+          "flake.lock"
+        ]
       }
     ],
     "grammars": [

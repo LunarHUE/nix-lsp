@@ -8,25 +8,61 @@
       "include": "#attr-shell"
     },
     {
+      "include": "#call-shell"
+    },
+    {
       "include": "#shebang-shell"
     }
   ],
   "repository": {
     "attr-shell": {
-      "comment": "Trigger B: a binding whose last attrpath segment is a well-known script-carrying name, valued by an indented string. Owns the ''...'' delimiters; the inner begin/while region carries the shell so a line-spanning shell rule cannot swallow the closing ''.",
-      "begin": "\\b(script|preStart|postStart|preStop|postStop|shellHook)\\b\\s*=\\s*('')",
+      "comment": "Trigger B: a binding whose last attrpath segment is a well-known script-carrying name, valued by an indented string. This rule consumes the attr name and `=`, so the host grammar never opens its binding region — therefore the end must also consume the trailing `;` (scoped exactly as the host would: punctuation.terminator.bind.nix) so the host resumes at a clean binding boundary instead of seeing a stray `;` (which it scopes invalid.illegal). Captures mirror the host's scopes so the consumed prefix renders identically.",
+      "begin": "\\b(script|preStart|postStart|preStop|postStop|shellHook)\\b\\s*(=)\\s*('')",
       "beginCaptures": {
         "1": {
-          "name": "entity.other.attribute-name.nix"
+          "name": "entity.other.attribute-name.multipart.nix"
         },
         "2": {
-          "name": "punctuation.definition.string.other.start.nix"
+          "name": "keyword.operator.bind.nix"
+        },
+        "3": {
+          "name": "string.quoted.other.nix punctuation.definition.string.other.start.nix"
+        }
+      },
+      "end": "(''(?!['$\\\\]))\\s*(;)?",
+      "endCaptures": {
+        "1": {
+          "name": "string.quoted.other.nix punctuation.definition.string.other.end.nix"
+        },
+        "2": {
+          "name": "punctuation.terminator.bind.nix"
+        }
+      },
+      "contentName": "meta.embedded.block.shellscript",
+      "patterns": [
+        {
+          "include": "#shell-lines"
+        }
+      ]
+    },
+    "call-shell": {
+      "comment": "Trigger C: writeShellScript/writeShellScriptBin calls — the body is shell even without a #! (the builder adds it at build time). Owns the ''...'' delimiters like attr-shell, but must NOT consume the trailing `;`: here the host DID tokenize `name =` and opened its binding region (which ends at `;`), so the host needs the `;` to close it — consuming it would desync the host. Deliberately does not trigger on bare `text = ''` attrs (arbitrary file content, too many false positives), so writeShellApplication bodies stay unhighlighted.",
+      "begin": "\\b(writeShellScript|writeShellScriptBin)\\b\\s*(\"[^\"]*\")\\s*('')",
+      "beginCaptures": {
+        "1": {
+          "name": "variable.parameter.name.nix"
+        },
+        "2": {
+          "name": "string.quoted.double.nix"
+        },
+        "3": {
+          "name": "string.quoted.other.nix punctuation.definition.string.other.start.nix"
         }
       },
       "end": "''(?!['$\\\\])",
       "endCaptures": {
         "0": {
-          "name": "punctuation.definition.string.other.end.nix"
+          "name": "string.quoted.other.nix punctuation.definition.string.other.end.nix"
         }
       },
       "contentName": "meta.embedded.block.shellscript",
@@ -53,7 +89,7 @@
       ]
     },
     "shell-lines": {
-      "comment": "Per-line shell wrapper used inside attr-shell. Its while condition fails on the closing '' line and force-pops any shell rule the shell grammar left open across the line boundary, so control returns to attr-shell whose end consumes the ''. The begin is anchored at line-start (^) so source.shell sees ^ on the region's first content line (its ^-anchored statement rules consume the indent themselves). The (?!...'') guard mirrors the while so this rule does NOT re-enter on the terminator line (where ^ would otherwise re-match at column 0, before the closing '', and swallow it).",
+      "comment": "Per-line shell wrapper used inside attr-shell and call-shell. Its while condition fails on the closing '' line and force-pops any shell rule the shell grammar left open across the line boundary, so control returns to the outer rule whose end consumes the ''. The begin is anchored at line-start (^) so source.shell sees ^ on the region's first content line (its ^-anchored statement rules consume the indent themselves). The (?!...'') guard mirrors the while so this rule does NOT re-enter on the terminator line (where ^ would otherwise re-match at column 0, before the closing '', and swallow it).",
       "begin": "^(?!\\s*''(?!['$\\\\]))",
       "while": "^(?!\\s*''(?!['$\\\\]))",
       "patterns": [
