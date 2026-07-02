@@ -2,7 +2,12 @@
 
 A minimal VS Code extension used to exercise the `nixls` Nix language server
 during development. It launches the server over stdio and wires up diagnostics
-for `.nix` files. It intentionally does nothing else.
+for `.nix` files, and bundles a TextMate grammar so `.nix` files get syntax
+highlighting. It intentionally does nothing else.
+
+The grammar (`syntaxes/nix.tmLanguage.json`) and `language-configuration.json`
+are vendored from [nix-community/vscode-nix-ide](https://github.com/nix-community/vscode-nix-ide)
+(MIT, see `syntaxes/LICENSE.vscode-nix-ide`).
 
 ## Build
 

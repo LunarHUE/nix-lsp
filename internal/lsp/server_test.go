@@ -53,6 +53,48 @@ func TestServerInitializeShutdownExitFlow(t *testing.T) {
 	}
 }
 
+func TestServerIgnoresUnknownNotifications(t *testing.T) {
+	// $/setTrace is a notification the handler does not know; the spec says to
+	// ignore it. It must not tear down the connection: the shutdown request
+	// after it still gets a response and Run exits cleanly on exit.
+	input := strings.Join([]string{
+		rawFrame(`{"jsonrpc":"2.0","method":"$/setTrace","params":{"value":"off"}}`),
+		rawFrame(`{"jsonrpc":"2.0","id":1,"method":"shutdown"}`),
+		rawFrame(`{"jsonrpc":"2.0","method":"exit"}`),
+	}, "")
+
+	var out bytes.Buffer
+	err := NewServer(strings.NewReader(input), &out, LifecycleHandler{}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	responses := readAllMessages(t, &out)
+	if len(responses) != 1 {
+		t.Fatalf("got %d responses, want 1 (shutdown only): %#v", len(responses), responses)
+	}
+	if responses[0].Error != nil {
+		t.Fatalf("shutdown error = %v", responses[0].Error)
+	}
+}
+
+func TestServerSurvivesNotificationHandlerError(t *testing.T) {
+	// Notifications have no response channel, so a handler failure on one must
+	// be dropped (logged), not returned from Run.
+	input := strings.Join([]string{
+		rawFrame(`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{}}`),
+		rawFrame(`{"jsonrpc":"2.0","method":"exit"}`),
+	}, "")
+
+	var out bytes.Buffer
+	handler := HandlerFunc(func(_ context.Context, _ string, _ json.RawMessage) (any, error) {
+		return nil, io.ErrUnexpectedEOF
+	})
+	if err := NewServer(strings.NewReader(input), &out, handler).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func TestServerUsesCanceledContextForHandlerResponse(t *testing.T) {
 	input := rawFrame(`{"jsonrpc":"2.0","id":1,"method":"custom/test"}`)
 	ctx, cancel := context.WithCancel(context.Background())

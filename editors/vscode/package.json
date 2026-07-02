@@ -34,7 +34,15 @@
         ],
         "extensions": [
           ".nix"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nix",
+        "scopeName": "source.nix",
+        "path": "./syntaxes/nix.tmLanguage.json"
       }
     ],
     "configuration": {

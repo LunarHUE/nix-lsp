@@ -1,0 +1,215 @@
+{
+  "networking.firewall.allowedTCPPorts": {
+    "declarations": [
+      "nixos/modules/services/networking/firewall.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "[ ]"
+    },
+    "description": "List of TCP ports on which incoming connections are\naccepted.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "[\n  22\n  80\n]"
+    },
+    "loc": [
+      "networking",
+      "firewall",
+      "allowedTCPPorts"
+    ],
+    "readOnly": false,
+    "type": "list of 16 bit unsigned integer; between 0 and 65535 (both inclusive)"
+  },
+  "networking.firewall.enable": {
+    "declarations": [
+      "nixos/modules/services/networking/firewall.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "true"
+    },
+    "description": "Whether to enable the firewall.  This is a simple stateful\nfirewall that blocks connection attempts to unauthorised TCP\nor UDP ports on this machine.\n",
+    "loc": [
+      "networking",
+      "firewall",
+      "enable"
+    ],
+    "readOnly": false,
+    "type": "boolean"
+  },
+  "services.openssh.enable": {
+    "declarations": [
+      "nixos/modules/services/networking/ssh/sshd.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "false"
+    },
+    "description": "Whether to enable the OpenSSH secure shell daemon, which\nallows secure remote logins.\n",
+    "loc": [
+      "services",
+      "openssh",
+      "enable"
+    ],
+    "readOnly": false,
+    "type": "boolean"
+  },
+  "services.openssh.settings.PermitRootLogin": {
+    "declarations": [
+      "nixos/modules/services/networking/ssh/sshd.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "\"prohibit-password\""
+    },
+    "description": "Whether the root user can login using ssh.\n",
+    "loc": [
+      "services",
+      "openssh",
+      "settings",
+      "PermitRootLogin"
+    ],
+    "readOnly": false,
+    "type": "null or one of \"yes\", \"without-password\", \"prohibit-password\", \"forced-commands-only\", \"no\""
+  },
+  "users.users.<name>.home": {
+    "declarations": [
+      "nixos/modules/config/users-groups.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "\"/var/empty\""
+    },
+    "description": "The user's home directory.",
+    "loc": [
+      "users",
+      "users",
+      "<name>",
+      "home"
+    ],
+    "readOnly": false,
+    "type": "absolute path, not containing newlines or colons"
+  },
+  "users.users.<name>.shell": {
+    "declarations": [
+      "nixos/modules/config/users-groups.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "pkgs.shadow"
+    },
+    "description": "The path to the user's shell. Can use shell derivations,\nlike `pkgs.bashInteractive`. Don’t\nforget to enable your shell in\n`programs` if necessary,\nlike `programs.zsh.enable = true;`.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "pkgs.bashInteractive"
+    },
+    "loc": [
+      "users",
+      "users",
+      "<name>",
+      "shell"
+    ],
+    "readOnly": false,
+    "type": "null or package or (absolute path, not containing newlines or colons)"
+  },
+  "boot.loader.systemd-boot.enable": {
+    "declarations": [
+      "nixos/modules/system/boot/loader/systemd-boot/systemd-boot.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "false"
+    },
+    "description": "Whether to enable the systemd-boot (formerly gummiboot) EFI boot manager.\nFor more information about systemd-boot:\n<https://www.freedesktop.org/wiki/Software/systemd/systemd-boot/>\n",
+    "loc": [
+      "boot",
+      "loader",
+      "systemd-boot",
+      "enable"
+    ],
+    "readOnly": false,
+    "type": "boolean"
+  },
+  "environment.systemPackages": {
+    "declarations": [
+      "nixos/modules/config/system-path.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "[ ]"
+    },
+    "description": "The set of packages that appear in\n/run/current-system/sw.  These packages are\nautomatically available to all users, and are\nautomatically updated every time you rebuild the system\nconfiguration.  (The latter is the main difference with\ninstalling them in the default profile,\n{file}`/nix/var/nix/profiles/default`.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "[ pkgs.firefox pkgs.thunderbird ]"
+    },
+    "loc": [
+      "environment",
+      "systemPackages"
+    ],
+    "readOnly": false,
+    "type": "list of package"
+  },
+  "systemd.services.<name>.serviceConfig": {
+    "declarations": [
+      "nixos/modules/system/boot/systemd.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "{ }"
+    },
+    "description": "Each attribute in this set specifies an option in the\n`[Service]` section of the unit.  See\n{manpage}`systemd.service(5)` for details.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "{\n  RestartSec = 5;\n}"
+    },
+    "loc": [
+      "systemd",
+      "services",
+      "<name>",
+      "serviceConfig"
+    ],
+    "readOnly": false,
+    "type": "attribute set of (systemd option)"
+  },
+  "nix.settings": {
+    "declarations": [
+      "nixos/modules/config/nix.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "{ }"
+    },
+    "description": "Configuration for Nix, see\n<https://nixos.org/manual/nix/stable/command-ref/conf-file.html> or\n{manpage}`nix.conf(5)` for available options.\nThe value declared here will be translated directly to the key-value pairs Nix expects.\n\nYou can use {command}`nix-instantiate --eval --strict '<nixpkgs/nixos>' -A config.nix.settings`\nto view the current value. By default it is empty.\n\nNix configurations defined under {option}`nix.*` will be translated and applied to this\noption. In addition, configuration specified in {option}`nix.extraOptions` will be appended\nverbatim to the resulting config file.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "{\n  use-sandbox = true;\n  show-trace = true;\n\n  sandbox-paths = [ \"/bin/sh=${pkgs.busybox-sandbox-shell.out}/bin/busybox\" ];\n}\n"
+    },
+    "loc": [
+      "nix",
+      "settings"
+    ],
+    "readOnly": false,
+    "type": "open submodule of attribute set of (Nix config atom (null, bool, int, float, str, path or package) or list of (Nix config atom (null, bool, int, float, str, path or package)))"
+  },
+  "time.timeZone": {
+    "declarations": [
+      "nixos/modules/config/locale.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "null"
+    },
+    "description": "The time zone used when displaying times and dates. See <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>\nfor a comprehensive list of possible values for this setting.\n\nIf null, the timezone will default to UTC and can be set imperatively\nusing timedatectl.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "\"America/New_York\""
+    },
+    "loc": [
+      "time",
+      "timeZone"
+    ],
+    "readOnly": false,
+    "type": "null or string without spaces"
+  }
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -236,12 +237,22 @@ func (s *Server) handleRequest(ctx context.Context, method string, params json.R
 	return s.handler.Handle(ctx, method, params)
 }
 
+// handleNotification never returns an error: JSON-RPC has no response channel
+// for notifications, so a handler failure must not tear down the connection.
+// Unknown methods (e.g. $/setTrace, which the spec says to ignore) are dropped
+// silently; other handler errors are logged to stderr.
 func (s *Server) handleNotification(ctx context.Context, method string, params json.RawMessage) error {
 	if method == "initialized" || method == "exit" {
 		return nil
 	}
 	_, err := s.handler.Handle(ctx, method, params)
-	return err
+	if err != nil {
+		var rpcErr *ResponseError
+		if !errors.As(err, &rpcErr) || rpcErr.Code != errMethodNotFound {
+			fmt.Fprintf(os.Stderr, "lsp: notification %s: %v\n", method, err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) cancelRequest(params json.RawMessage) error {
@@ -249,7 +260,10 @@ func (s *Server) cancelRequest(params json.RawMessage) error {
 		ID json.RawMessage `json:"id"`
 	}
 	if err := json.Unmarshal(params, &decoded); err != nil {
-		return fmt.Errorf("decode cancel params: %w", err)
+		// Notifications cannot be answered, so a malformed cancel is logged
+		// and dropped rather than tearing down the connection.
+		fmt.Fprintf(os.Stderr, "lsp: notification $/cancelRequest: decode params: %v\n", err)
+		return nil
 	}
 
 	s.mu.Lock()

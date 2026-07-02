@@ -1,0 +1,165 @@
+{
+    "comments": {
+        // symbol used for single line comment. Remove this entry if your language does not support line comments
+        "lineComment": "#",
+        // symbols used for start and end a block comment. Remove this entry if your language does not support block comments
+        "blockComment": [
+            "/*",
+            "*/"
+        ]
+    },
+    // symbols used as brackets
+    "brackets": [
+        [
+            "${",
+            "}"
+        ],
+        [
+            "{",
+            "}"
+        ],
+        [
+            "[",
+            "]"
+        ],
+        [
+            "(",
+            ")"
+        ],
+        [
+            "<",
+            ">"
+        ]
+    ],
+    // symbols that are auto closed when typing
+    "autoClosingPairs": [
+        {
+            "open": "{",
+            "close": "}"
+        },
+        {
+            "open": "[",
+            "close": "]"
+        },
+        {
+            "open": "(",
+            "close": ")"
+        },
+        {
+            "open": "\"",
+            "close": "\"",
+            "notIn": [
+                "string"
+            ]
+        },
+        {
+            "open": "''",
+            "close": "''",
+            "notIn": [
+                "string",
+                "comment"
+            ]
+        },
+        {
+            "open": "/**",
+            "close": " */",
+            "notIn": [
+                "string"
+            ]
+        }
+    ],
+    "autoCloseBefore": ";:.,=}])>` \n\t\"",
+    // symbols that can be used to surround a selection
+    "surroundingPairs": [
+        [
+            "{",
+            "}"
+        ],
+        [
+            "[",
+            "]"
+        ],
+        [
+            "(",
+            ")"
+        ],
+        [
+            "<",
+            ">"
+        ],
+        [
+            "\"",
+            "\""
+        ],
+        [
+            "'",
+            "'"
+        ],
+        [
+            "''",
+            "''"
+        ],
+        // Backticks don't have any special meaning in nix language, it's just for Markdown in comments.
+        [
+            "`",
+            "`"
+        ],
+    ],
+    "folding": {
+        "markers": {
+            "start": "^\\s*#\\s*#?region\\b",
+            "end": "^\\s*#\\s*#?endregion\\b"
+        }
+    },
+    "onEnterRules": [
+        {
+            "beforeText": "^.*\\blet\\s*$",
+            "afterText": "\\s*in\\b.*$",
+            "action": {
+                "indent": "indentOutdent"
+            }
+        },
+        {
+            "beforeText": "^.*\\bif\\s*$",
+            "afterText": "\\s*then\\b.*$",
+            "action": {
+                "indent": "indentOutdent"
+            }
+        },
+        {
+            "beforeText": "^.*\\bthen\\s*$",
+            "afterText": "\\s*else\\b.*$",
+            "action": {
+                "indent": "indentOutdent"
+            }
+        },
+        {
+            "beforeText": "^.*''\\s*$",
+            "afterText": "\\s*''.*$",
+            "action": {
+                "indent": "indentOutdent"
+            }
+        },
+        {
+            "beforeText": "^.*/\\*\\*\\s*$",
+            "afterText": "\\s*\\*/.*$",
+            "action": {
+                "indent": "indentOutdent"
+            }
+        },
+        {
+            "beforeText": "^.*(?:=|/\\*\\*|'')\\s*$",
+            "action": {
+                "indent": "indent"
+            }
+        },
+        {
+            // NOTE: `in` is not included on purpose, because nixfmt also doesn't indent after it.
+            "beforeText": "^.*\\b(?:let|with|if|then|else|rec|or|and|assert|inherit)\\s*$",
+            "action": {
+                "indent": "indent"
+            }
+        },
+    ],
+    "wordPattern": "(-?\\d*\\.\\d\\w*)|((~|[^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\<\\>\\/\\?\\s]+)/[^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\<\\>\\?\\s]+)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)"
+}
