@@ -41,6 +41,7 @@
         corePackages = with pkgs; [
           nodejs_22
           pnpm
+          go
         ];
 
         devOnlyPackages = with pkgs; [
