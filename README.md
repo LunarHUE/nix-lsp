@@ -22,9 +22,10 @@ go run ./cmd/nixls
 ## Testing in VS Code
 
 The server speaks LSP/JSON-RPC over stdio. It publishes diagnostics and answers
-within-file document symbols (outline), go-to-definition, and document
-highlights. You can try it end-to-end in VS Code with the bundled development
-client under [editors/vscode](editors/vscode).
+within-file document symbols (outline), go-to-definition (which also jumps
+through import paths to other files), find-all-references, folding ranges, and
+document highlights. You can try it end-to-end in VS Code with the bundled
+development client under [editors/vscode](editors/vscode).
 
 ### 1. Build the server
 
@@ -86,8 +87,13 @@ point it at the `nixls` binary, use **stdio** transport, and associate it with
    their own severities (unused bindings are warnings; the rest are errors).
 7. Open the Outline view to see the file's attribute/let structure. Put the
    cursor on a `let` binding or attribute name (or a use of it) and try
-   **Go to Definition** and **Highlight** (highlighting shows the definition as
-   a write and every use as a read). These work within a single file.
+   **Go to Definition**, **Find All References**, and **Highlight** (highlighting
+   shows the definition as a write and every use as a read). These work within a
+   single file. Use the editor's folding controls to collapse attribute sets,
+   `let` blocks, lists, and functions.
+8. Put the cursor on an `import ./foo.nix` path (or a `./x.nix` inside
+   `imports = [ ... ]` or after `callPackage`) and **Go to Definition** to jump
+   to the top of the target file.
 
 The same import checks fire for `imports = [ ./x.nix ]` and
 `callPackage ./x.nix` references. In a flake workspace under git, an import
@@ -104,10 +110,12 @@ git-tracked files, so run git add`.
   `callPackage` targets).
 - Binding diagnostics: unused bindings (warning), plus duplicate and
   bad-`inherit` bindings (error).
-- Document symbols (outline), go-to-definition, and document highlights — all
-  scoped to a single file.
+- Document symbols (outline), go-to-definition, find-all-references, folding
+  ranges, and document highlights.
 
-Go-to-definition and highlights are **within-file only**: a reference that
-resolves to a binding in another file is not followed yet. `nixls` also does
-**not** yet provide completion or hover, and it uses **full-document** text sync
-(the whole document is resent on each change).
+References, highlights, and identifier go-to-definition are **within-file only**:
+a reference that resolves to a binding in another file is not followed yet. The
+one exception is import paths — go-to-definition on an `import`, `imports`, or
+`callPackage` path does cross files, jumping to the top of the target file.
+`nixls` also does **not** yet provide completion or hover, and it uses
+**full-document** text sync (the whole document is resent on each change).

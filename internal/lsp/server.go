@@ -243,6 +243,8 @@ type ServerCapabilities struct {
 	DocumentSymbolProvider    bool `json:"documentSymbolProvider,omitempty"`
 	DefinitionProvider        bool `json:"definitionProvider,omitempty"`
 	DocumentHighlightProvider bool `json:"documentHighlightProvider,omitempty"`
+	ReferencesProvider        bool `json:"referencesProvider,omitempty"`
+	FoldingRangeProvider      bool `json:"foldingRangeProvider,omitempty"`
 }
 
 type ServerInfo struct {

@@ -80,6 +80,8 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				DocumentSymbolProvider:    true,
 				DefinitionProvider:        true,
 				DocumentHighlightProvider: true,
+				ReferencesProvider:        true,
+				FoldingRangeProvider:      true,
 			},
 			ServerInfo: &lsp.ServerInfo{
 				Name: "nix-lsp",
@@ -97,6 +99,10 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		return h.definition(ctx, params)
 	case "textDocument/documentHighlight":
 		return h.documentHighlight(ctx, params)
+	case "textDocument/references":
+		return h.references(ctx, params)
+	case "textDocument/foldingRange":
+		return h.foldingRange(ctx, params)
 	case "textDocument/didSave", "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles":
 		return nil, nil
 	default:

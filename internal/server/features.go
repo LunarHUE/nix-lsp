@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"sort"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/imports"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/scopes"
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
@@ -30,6 +32,30 @@ type documentSymbolParams struct {
 type textDocumentPositionParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
 	Position     protocolPosition       `json:"position"`
+}
+
+type referenceParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Position     protocolPosition       `json:"position"`
+	Context      referenceContext       `json:"context"`
+}
+
+type referenceContext struct {
+	IncludeDeclaration bool `json:"includeDeclaration"`
+}
+
+type foldingRangeParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+}
+
+// FoldingRange is a single LSP folding range. The optional `kind` field is
+// intentionally omitted: these ranges are structural regions, not comments or
+// imports.
+type FoldingRange struct {
+	StartLine      int `json:"startLine"`
+	StartCharacter int `json:"startCharacter"`
+	EndLine        int `json:"endLine"`
+	EndCharacter   int `json:"endCharacter"`
 }
 
 // DocumentSymbol is the hierarchical LSP document-symbol shape.
@@ -88,7 +114,55 @@ func (h *Handler) definition(ctx context.Context, params json.RawMessage) (any, 
 	if location := definitionAt(file, decoded.TextDocument.URI, pos); location != nil {
 		return location, nil
 	}
+	// Fall back to import-path resolution: gd on `import ./foo.nix`,
+	// `imports = [ ./x.nix ]`, or `callPackage ./x.nix` jumps to the target file.
+	edges, err := facts.ImportEdges(ctx, h.memo, fileID)
+	if err != nil {
+		return nil, nil
+	}
+	if location := importDefinitionAt(edges, pos); location != nil {
+		return location, nil
+	}
 	return nil, nil
+}
+
+// references answers textDocument/references using scope resolution.
+func (h *Handler) references(ctx context.Context, params json.RawMessage) (any, error) {
+	var decoded referenceParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return nil, nil
+	}
+	fileID, ok := h.fileInputForURI(decoded.TextDocument.URI)
+	if !ok {
+		return nil, nil
+	}
+	file, err := facts.Scopes(ctx, h.memo, fileID)
+	if err != nil || file == nil {
+		return nil, nil
+	}
+	pos := syntax.Position{Line: decoded.Position.Line, Character: decoded.Position.Character}
+	locations := referencesAt(file, decoded.TextDocument.URI, pos, decoded.Context.IncludeDeclaration)
+	if locations == nil {
+		return nil, nil
+	}
+	return locations, nil
+}
+
+// foldingRange answers textDocument/foldingRange from the parse tree.
+func (h *Handler) foldingRange(ctx context.Context, params json.RawMessage) (any, error) {
+	var decoded foldingRangeParams
+	if err := json.Unmarshal(params, &decoded); err != nil {
+		return nil, nil
+	}
+	fileID, ok := h.fileInputForURI(decoded.TextDocument.URI)
+	if !ok {
+		return nil, nil
+	}
+	tree, err := facts.ParseTree(ctx, h.memo, fileID)
+	if err != nil {
+		return nil, nil
+	}
+	return foldingRanges(tree), nil
 }
 
 // documentHighlight answers textDocument/documentHighlight using scope
@@ -149,6 +223,122 @@ func definitionAt(file *scopes.File, uri string, pos syntax.Position) *Location 
 		return &Location{URI: uri, Range: toProtocolRange(binding.NameRange)}
 	}
 	return nil
+}
+
+// importDefinitionAt returns a location at the start of the file targeted by an
+// import edge whose range contains pos, or nil. Only edges with an existing,
+// resolved target participate; the returned range is the zero range (0:0-0:0),
+// which points at the top of the target file.
+func importDefinitionAt(edges []imports.Edge, pos syntax.Position) *Location {
+	for _, edge := range edges {
+		if !edge.Exists || edge.TargetPath == "" {
+			continue
+		}
+		if !rangeContainsPosition(edge.Range, pos) {
+			continue
+		}
+		uri, err := vfs.PathToURI(edge.TargetPath)
+		if err != nil {
+			return nil
+		}
+		return &Location{URI: uri}
+	}
+	return nil
+}
+
+// referencesAt returns the locations of every reference to the binding under
+// pos, optionally including the binding's own declaration. The cursor may sit on
+// the declaration name or on any use. It returns nil when pos resolves to no
+// binding. Builtins have no real declaration site, so includeDeclaration never
+// adds one for them.
+func referencesAt(file *scopes.File, uri string, pos syntax.Position, includeDeclaration bool) []Location {
+	binding := file.BindingAt(pos)
+	if binding == nil {
+		if ref := file.ReferenceAt(pos); ref != nil {
+			binding = ref.Target
+		}
+	}
+	if binding == nil {
+		return nil
+	}
+
+	var locations []Location
+	if includeDeclaration && binding.Kind != scopes.Builtin {
+		locations = append(locations, Location{URI: uri, Range: toProtocolRange(binding.NameRange)})
+	}
+	for _, ref := range binding.References() {
+		locations = append(locations, Location{URI: uri, Range: toProtocolRange(ref.Range)})
+	}
+	return locations
+}
+
+// foldingRanges walks the parse tree and emits a folding range for every
+// multi-line foldable construct (attribute sets, let, lists, functions). Ranges
+// that share both start and end line with an already-emitted range are dropped,
+// which collapses parent/child chains like `x: { ... }` into a single fold. The
+// result is sorted by start line.
+func foldingRanges(tree *syntax.Tree) []FoldingRange {
+	if tree == nil {
+		return nil
+	}
+
+	var ranges []FoldingRange
+	seen := make(map[[2]int]bool)
+	tree.Walk(func(node syntax.Node) bool {
+		if !isFoldableKind(node.Kind()) {
+			return true
+		}
+		r := node.Range()
+		if r.End.Line <= r.Start.Line {
+			return true
+		}
+		key := [2]int{r.Start.Line, r.End.Line}
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+		ranges = append(ranges, FoldingRange{
+			StartLine:      r.Start.Line,
+			StartCharacter: r.Start.Character,
+			EndLine:        r.End.Line,
+			EndCharacter:   r.End.Character,
+		})
+		return true
+	})
+	if ranges == nil {
+		return nil
+	}
+	sort.SliceStable(ranges, func(i, j int) bool {
+		return ranges[i].StartLine < ranges[j].StartLine
+	})
+	return ranges
+}
+
+// isFoldableKind reports whether a node kind produces a folding range.
+func isFoldableKind(kind string) bool {
+	switch kind {
+	case "attrset_expression", "rec_attrset_expression", "let_expression",
+		"list_expression", "function_expression":
+		return true
+	default:
+		return false
+	}
+}
+
+// rangeContainsPosition reports whether pos lies within the half-open range r.
+func rangeContainsPosition(r syntax.Range, pos syntax.Position) bool {
+	if positionLess(pos, r.Start) {
+		return false
+	}
+	return positionLess(pos, r.End)
+}
+
+// positionLess reports whether a is strictly before b.
+func positionLess(a, b syntax.Position) bool {
+	if a.Line != b.Line {
+		return a.Line < b.Line
+	}
+	return a.Character < b.Character
 }
 
 // documentHighlightsAt returns the write highlight for a binding's definition

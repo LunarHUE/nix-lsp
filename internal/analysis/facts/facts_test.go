@@ -181,6 +181,46 @@ func TestFileInputInvalidationRecomputesDiagnostics(t *testing.T) {
 	}
 }
 
+// TestImportEdgesGetterReturnsTypedEdgesThroughMemo verifies the exported
+// ImportEdges getter surfaces resolved, typed edges via the memo path and records
+// the same dependencies as the internal query.
+func TestImportEdgesGetterReturnsTypedEdgesThroughMemo(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "default.nix"), "import ./target.nix")
+	target := writeFile(t, filepath.Join(root, "target.nix"), "{}")
+	content := []byte("import ./target.nix")
+	id := FileID(source, vfs.ContentHash(content))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+	SetFileInput(engine, id, FileInput{Path: source, Content: content})
+
+	edges, err := ImportEdges(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("ImportEdges error = %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d (%+v), want 1", len(edges), edges)
+	}
+	edge := edges[0]
+	if edge.Literal != "./target.nix" {
+		t.Errorf("edge literal = %q, want ./target.nix", edge.Literal)
+	}
+	if !edge.Exists {
+		t.Errorf("edge exists = false, want true")
+	}
+	if edge.TargetPath != normalize(t, target) {
+		t.Errorf("edge target = %q, want %q", edge.TargetPath, normalize(t, target))
+	}
+
+	deps := keySet(engine.Dependencies(ImportEdgesKey(id)))
+	if !deps[ParseTreeKey(id)] {
+		t.Fatalf("ImportEdges did not depend on ParseTree: %v", deps)
+	}
+	if !deps[FileInputKey(id)] {
+		t.Fatalf("ImportEdges did not depend on FileInput: %v", deps)
+	}
+}
+
 func NewEngineForTest() *memo.Engine {
 	engine := memo.New()
 	Register(engine)

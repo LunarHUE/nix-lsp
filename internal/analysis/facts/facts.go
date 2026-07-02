@@ -123,6 +123,21 @@ func Scopes(ctx context.Context, engine *memo.Engine, fileID string) (*scopes.Fi
 	return file, nil
 }
 
+// ImportEdges reads the resolved import edges for fileID from the memo engine.
+// fileID must be a composite produced by FileID(path, hash). The returned edges
+// are immutable after analysis and safe to share across callers.
+func ImportEdges(ctx context.Context, engine *memo.Engine, fileID string) ([]importedges.Edge, error) {
+	value, err := engine.Get(ctx, ImportEdgesKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	edges, ok := value.([]importedges.Edge)
+	if !ok {
+		return nil, fmt.Errorf("facts: ImportEdges returned %T", value)
+	}
+	return edges, nil
+}
+
 // ParseTree reads the parse tree for fileID from the memo engine. fileID must be
 // a composite produced by FileID(path, hash).
 func ParseTree(ctx context.Context, engine *memo.Engine, fileID string) (*syntax.Tree, error) {
