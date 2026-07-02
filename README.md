@@ -24,8 +24,10 @@ go run ./cmd/nixls
 The server speaks LSP/JSON-RPC over stdio. It publishes diagnostics and answers
 within-file document symbols (outline), go-to-definition (which also follows
 import paths and attribute selection into other files), find-all-references,
-folding ranges,
-document highlights, hover on flake inputs, and workspace-wide symbol search.
+folding ranges, document highlights, workspace-wide symbol search, four kinds
+of hover (flake inputs, NixOS options with full documentation, package
+versions, and locally bound values), and dot-triggered completion for option
+paths, package attributes, `with pkgs;` names, and local bindings.
 You can try it end-to-end
 in VS Code with the bundled development client under
 [editors/vscode](editors/vscode).
@@ -166,11 +168,29 @@ untracked) import target has no fix, since `git add` cannot conjure the file.
   appears only where its own diagnostic does.
 - Document symbols (outline), go-to-definition, find-all-references, folding
   ranges, and document highlights.
-- Hover on the root `flake.nix` inputs (declared url plus locked source, rev,
-  and last-modified date from `flake.lock`), and go-to-definition on a `follows`
-  target or an `outputs` formal jumps to the input's declaration.
-- Completion inside the root `flake.nix` for `follows` targets and `outputs`
-  formals (declared input names; `self` in formals) — nothing else completes yet.
+- Hover on the root `flake.nix` inputs (declared url plus locked source, pinned
+  ref, rev, and last-modified date from `flake.lock`), and go-to-definition on a
+  `follows` target or an `outputs` formal jumps to the input's declaration.
+- NixOS option hover and completion in any `.nix` file: description, type,
+  default, example, and a linked declaring module for 24k+ options from the
+  official channel `options.json` (auto-downloaded for the locked nixpkgs
+  channel and cached; `nixls.optionsPath` overrides or disables). Submodule
+  wildcards resolve through concrete instances, and typing `networking.`
+  completes option paths with docs.
+- Package version hover and completion: `pkgs.<attr>` selects and bare names
+  under `with pkgs;` show name, version, description, and a linked homepage
+  from the channel `packages.json` (145k+ packages; `nixls.packagesPath`
+  overrides or disables), with curated docs for well-known non-derivation attrs
+  like `runtimeShell` and `mkShell`. `pkgs.` completes attributes with
+  versions.
+- Binding-value hover: any locally bound identifier (including inside
+  `${...}`) shows the source expression it is bound to; script-carrying
+  attributes like `shellHook` render their content as highlighted bash.
+- Completion for lexically visible local names everywhere else.
+- Editor niceties from the bundled extension: full TextMate syntax highlighting
+  with embedded-bash regions in shebang strings, `script`/`shellHook` attrs,
+  and `writeShellScript(Bin)` calls; `flake.lock` highlighted as JSON; Nix file
+  icons.
 - Workspace symbol search (`Ctrl+T`) over let/rec/attribute bindings in every
   `.nix` file (case-insensitive substring match, results capped at 128).
 - Automatic diagnostics refresh on external file changes and branch switches,
@@ -186,7 +206,8 @@ on the attribute's definition in the target file (local attribute sets too).
 This selection support is deliberately conservative: dynamic (`${...}`) keys,
 names provided by `with`, and a base whose value has zero or multiple import
 edges are not followed, so it never guesses a wrong jump.
-Hover is currently limited to the root `flake.nix` inputs, and completion is
-limited to `follows` targets and `outputs` formals in the root `flake.nix`;
-`nixls` does **not** yet provide general expression completion or hover, and it
-uses **full-document** text sync (the whole document is resent on each change).
+Option and package data reflects the nixpkgs **channel tip**, not your exact
+locked revision, and overlays can change real package versions (hovers say so).
+The server uses **full-document** text sync (the whole document is resent on
+each change), and it never executes `nix` — everything is static analysis plus
+the two downloaded datasets.
