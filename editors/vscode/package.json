@@ -1,0 +1,58 @@
+{
+  "name": "nixls-dev-client",
+  "displayName": "nixls dev client",
+  "description": "Minimal development VS Code client for the nixls Nix language server.",
+  "version": "0.0.1",
+  "publisher": "nix-lsp",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:nix"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "nix",
+        "aliases": [
+          "Nix",
+          "nix"
+        ],
+        "extensions": [
+          ".nix"
+        ]
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "nixls",
+      "properties": {
+        "nixls.serverPath": {
+          "type": "string",
+          "default": "nixls",
+          "description": "Path to the nixls server binary. Use an absolute path to your built ./nixls, or leave as \"nixls\" to resolve it from PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.82.0",
+    "typescript": "^5.4.0"
+  }
+}
