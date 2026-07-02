@@ -297,6 +297,41 @@ func TestSmokePublishesUnopenedWorkspaceAndDidChangeDiagnostics(t *testing.T) {
 	}
 }
 
+func TestHandlerPublishesWarningSeverityForUnusedBinding(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	notifier := &captureNotifier{messages: make(chan publishDiagnosticsParams, 4)}
+	handler.SetNotifier(notifier)
+
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+	openDocument(t, handler, uri, "let x = 1; in 2")
+
+	params := waitForPublish(t, notifier, uri, 1)
+	if got := params.Diagnostics[0].Severity; got != 2 {
+		t.Fatalf("severity = %d, want 2 (warning)", got)
+	}
+	if params.Diagnostics[0].Message != `unused binding "x"` {
+		t.Fatalf("message = %q, want unused binding", params.Diagnostics[0].Message)
+	}
+}
+
+func TestHandlerPublishesErrorSeverityForSyntaxDiagnostic(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	notifier := &captureNotifier{messages: make(chan publishDiagnosticsParams, 4)}
+	handler.SetNotifier(notifier)
+
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+	openDocument(t, handler, uri, "{")
+
+	params := waitForPublish(t, notifier, uri, 1)
+	if got := params.Diagnostics[0].Severity; got != 1 {
+		t.Fatalf("severity = %d, want 1 (error)", got)
+	}
+}
+
 func openDocument(t *testing.T, handler *Handler, uri string, text string) {
 	t.Helper()
 	_, err := handler.Handle(context.Background(), "textDocument/didOpen", mustJSON(t, map[string]any{

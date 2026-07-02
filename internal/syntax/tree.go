@@ -7,11 +7,30 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
+// Severity classifies how serious a diagnostic is. Its zero value is
+// SeverityError so diagnostics constructed without an explicit severity remain
+// errors, matching the historical behavior of this package.
+type Severity int
+
+const (
+	// SeverityError marks a problem that is almost certainly a mistake (syntax
+	// errors, unresolved imports, duplicate or bad bindings).
+	SeverityError Severity = iota
+	// SeverityWarning marks a likely-but-not-certain problem (unused bindings,
+	// flake files that exist but are not git-tracked).
+	SeverityWarning
+	// SeverityInformation marks an informational note.
+	SeverityInformation
+	// SeverityHint marks a subtle hint, typically rendered unobtrusively.
+	SeverityHint
+)
+
 // Diagnostic is the syntax package's internal diagnostic shape. The LSP layer
 // is responsible for converting it to protocol-specific diagnostics.
 type Diagnostic struct {
-	Message string
-	Range   Range
+	Message  string
+	Range    Range
+	Severity Severity
 }
 
 // Edit describes an edit for an incremental reparse. The current

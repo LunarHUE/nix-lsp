@@ -8,6 +8,7 @@ import (
 
 	"github.com/wesleybaldwin/nix-lsp/internal/memo"
 	"github.com/wesleybaldwin/nix-lsp/internal/project"
+	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
@@ -45,6 +46,43 @@ func TestRegisteredQueriesProduceDiagnosticsAndDependencies(t *testing.T) {
 	}
 	if !importDeps[FileInputKey(id)] {
 		t.Fatalf("ImportEdges did not depend on FileInput: %v", importDeps)
+	}
+}
+
+// TestFileDiagnosticsDependsOnScopesAndReportsUnused verifies the scope-based
+// binding diagnostics reach the diagnostics query through the memo path and that
+// FileDiagnostics records its dependency on the Scopes query.
+func TestFileDiagnosticsDependsOnScopesAndReportsUnused(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "default.nix"), "let x = 1; in 2")
+	content := []byte("let x = 1; in 2")
+	id := FileID(source, vfs.ContentHash(content))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+	SetFileInput(engine, id, FileInput{Path: source, Content: content})
+
+	diagnostics, err := FileDiagnostics(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("FileDiagnostics error = %v", err)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want 1", diagnostics)
+	}
+	if diagnostics[0].Message != `unused binding "x"` {
+		t.Fatalf("message = %q, want unused binding", diagnostics[0].Message)
+	}
+	if diagnostics[0].Severity != syntax.SeverityWarning {
+		t.Fatalf("severity = %v, want warning", diagnostics[0].Severity)
+	}
+
+	deps := keySet(engine.Dependencies(FileDiagnosticsKey(id)))
+	if !deps[ScopesKey(id)] {
+		t.Fatalf("FileDiagnostics did not depend on Scopes: %v", deps)
+	}
+
+	scopeDeps := keySet(engine.Dependencies(ScopesKey(id)))
+	if !scopeDeps[ParseTreeKey(id)] {
+		t.Fatalf("Scopes did not depend on ParseTree: %v", scopeDeps)
 	}
 }
 

@@ -396,12 +396,27 @@ func toProtocolDiagnostics(diagnostics []syntax.Diagnostic) []protocolDiagnostic
 				Start: toProtocolPosition(diagnostic.Range.Start),
 				End:   toProtocolPosition(diagnostic.Range.End),
 			},
-			Severity: 1,
+			Severity: lspSeverity(diagnostic.Severity),
 			Source:   "nix-lsp",
 			Message:  diagnostic.Message,
 		})
 	}
 	return protocolDiagnostics
+}
+
+// lspSeverity maps a syntax severity to its LSP DiagnosticSeverity integer
+// (Error=1, Warning=2, Information=3, Hint=4).
+func lspSeverity(severity syntax.Severity) int {
+	switch severity {
+	case syntax.SeverityWarning:
+		return 2
+	case syntax.SeverityInformation:
+		return 3
+	case syntax.SeverityHint:
+		return 4
+	default:
+		return 1
+	}
 }
 
 func toProtocolPosition(position syntax.Position) protocolPosition {

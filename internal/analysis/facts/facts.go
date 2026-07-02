@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	importedges "github.com/wesleybaldwin/nix-lsp/internal/analysis/imports"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/scopes"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/static"
 	"github.com/wesleybaldwin/nix-lsp/internal/memo"
 	"github.com/wesleybaldwin/nix-lsp/internal/project"
@@ -17,6 +18,7 @@ const (
 	QueryWorkspace       = "Workspace"
 	QueryParseTree       = "ParseTree"
 	QueryImportEdges     = "ImportEdges"
+	QueryScopes          = "Scopes"
 	QueryFileDiagnostics = "FileDiagnostics"
 )
 
@@ -46,6 +48,7 @@ func FileID(path, hash string) string {
 func Register(engine *memo.Engine) {
 	engine.Register(QueryParseTree, parseTree)
 	engine.Register(QueryImportEdges, importEdges)
+	engine.Register(QueryScopes, scopesQuery)
 	engine.Register(QueryFileDiagnostics, fileDiagnostics)
 }
 
@@ -79,6 +82,11 @@ func ParseTreeKey(fileID string) memo.Key {
 // ImportEdgesKey returns the import edge query key for fileID.
 func ImportEdgesKey(fileID string) memo.Key {
 	return memo.Key{Kind: QueryImportEdges, ID: fileID}
+}
+
+// ScopesKey returns the scope-analysis query key for fileID.
+func ScopesKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryScopes, ID: fileID}
 }
 
 // FileDiagnosticsKey returns the diagnostics query key for fileID.
@@ -124,12 +132,24 @@ func importEdges(ctx context.Context, q *memo.Context, key memo.Key) (any, error
 	return importedges.Analyze(input.Path, tree, static.TrackedFiles(workspace))
 }
 
+func scopesQuery(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
+	tree, err := getParseTree(ctx, q, key.ID)
+	if err != nil {
+		return nil, err
+	}
+	return scopes.Analyze(tree), nil
+}
+
 func fileDiagnostics(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
 	tree, err := getParseTree(ctx, q, key.ID)
 	if err != nil {
 		return nil, err
 	}
 	edges, err := getImportEdges(ctx, q, key.ID)
+	if err != nil {
+		return nil, err
+	}
+	file, err := getScopes(ctx, q, key.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +160,7 @@ func fileDiagnostics(ctx context.Context, q *memo.Context, key memo.Key) (any, e
 
 	diagnostics := tree.Diagnostics()
 	diagnostics = append(diagnostics, static.ImportDiagnostics(workspace, edges)...)
+	diagnostics = append(diagnostics, static.BindingDiagnostics(file, tree)...)
 	return diagnostics, nil
 }
 
@@ -178,6 +199,18 @@ func getParseTree(ctx context.Context, q *memo.Context, fileID string) (*syntax.
 		return nil, fmt.Errorf("facts: ParseTree returned %T", value)
 	}
 	return tree, nil
+}
+
+func getScopes(ctx context.Context, q *memo.Context, fileID string) (*scopes.File, error) {
+	value, err := q.Get(ctx, ScopesKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	file, ok := value.(*scopes.File)
+	if !ok {
+		return nil, fmt.Errorf("facts: Scopes returned %T", value)
+	}
+	return file, nil
 }
 
 func getImportEdges(ctx context.Context, q *memo.Context, fileID string) ([]importedges.Edge, error) {

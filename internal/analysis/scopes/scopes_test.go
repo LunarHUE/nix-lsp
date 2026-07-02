@@ -595,3 +595,27 @@ func TestRealisticFlake(t *testing.T) {
 		t.Fatalf("scopes = %d, want several", len(f.Scopes))
 	}
 }
+
+// TestFromInheritMarksBareInheritReferences checks that only the implied outer
+// references of a bare `inherit name;` carry FromInherit; the source expression
+// of `inherit (expr) name;` and ordinary variable uses do not.
+func TestFromInheritMarksBareInheritReferences(t *testing.T) {
+	f := analyze(t, "let a = 1; b = 2; in { inherit a; inherit (b) c; d = b; }")
+
+	// `inherit a;` implies a reference to a that is inherit-sourced.
+	a := refByName(t, f, "a")
+	if !a.FromInherit {
+		t.Fatalf("reference to a FromInherit = false, want true")
+	}
+
+	// The source `b` of `inherit (b) c;` and the value `b` of `d = b;` are
+	// ordinary references, not inherit-sourced. `c` implies no outer reference.
+	for _, r := range f.References {
+		if r.Name == "b" && r.FromInherit {
+			t.Fatalf("reference to b marked FromInherit, want false")
+		}
+		if r.Name == "c" {
+			t.Fatalf("inherit-from target c produced a reference: %+v", r)
+		}
+	}
+}

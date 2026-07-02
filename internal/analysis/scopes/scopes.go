@@ -163,6 +163,11 @@ type Reference struct {
 	// WithUncertain reports that the name was unresolved lexically but sits
 	// inside one or more `with` scopes, so it may be provided dynamically.
 	WithUncertain bool
+	// FromInherit reports that this reference is the implied outer reference of a
+	// bare `inherit name;` entry (shorthand for `name = name;`), rather than an
+	// ordinary variable use. A bad-inherit diagnostic keys on this so it flags
+	// only inherit sources, not every unresolved identifier.
+	FromInherit bool
 }
 
 // File is the analysis result for one parsed file.
@@ -479,7 +484,9 @@ func (a *analyzer) walkBareInherit(entry syntax.Node, inheritScope *Scope) {
 		if attr.Kind() != "identifier" {
 			continue
 		}
-		a.recordReference(attr, inheritScope)
+		if ref := a.recordReference(attr, inheritScope); ref != nil {
+			ref.FromInherit = true
+		}
 	}
 }
 
@@ -506,8 +513,9 @@ func (a *analyzer) define(scope *Scope, kind BindingKind, ident syntax.Node) {
 }
 
 // recordReference resolves node as a use of a name and records the reference.
-// node may be a variable_expression or a bare identifier (from an inherit).
-func (a *analyzer) recordReference(node syntax.Node, scope *Scope) {
+// node may be a variable_expression or a bare identifier (from an inherit). It
+// returns the recorded reference, or nil when node carries no usable name.
+func (a *analyzer) recordReference(node syntax.Node, scope *Scope) *Reference {
 	name := node.Text()
 	if node.Kind() == "variable_expression" {
 		if inner := node.ChildByFieldName("name"); !inner.IsZero() {
@@ -515,7 +523,7 @@ func (a *analyzer) recordReference(node syntax.Node, scope *Scope) {
 		}
 	}
 	if name == "" {
-		return
+		return nil
 	}
 
 	ref := &Reference{Name: name, Range: node.Range()}
@@ -526,6 +534,7 @@ func (a *analyzer) recordReference(node syntax.Node, scope *Scope) {
 	if target != nil {
 		target.refs = append(target.refs, ref)
 	}
+	return ref
 }
 
 // resolve looks name up lexically from scope outward. A lexical binding always
