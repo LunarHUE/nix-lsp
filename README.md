@@ -65,6 +65,12 @@ the built binary, e.g. `/absolute/path/to/nix-lsp/nixls`. Leave it as `nixls`
 if the binary is already on your `PATH`. See
 [editors/vscode/README.md](editors/vscode/README.md) for details.
 
+After rebuilding `./nixls` (or changing `nixls.serverPath`), run **nixls: Restart
+Server** from the Command Palette to pick up the change without reloading the
+window. For a guided tour of the features, open
+[examples/demo](examples/demo) as its own workspace folder — its README walks
+through each diagnostic, hover, completion, and quick fix.
+
 **b. Any generic LSP client (optional)**
 
 Any editor/extension that can launch an arbitrary language server works too:
