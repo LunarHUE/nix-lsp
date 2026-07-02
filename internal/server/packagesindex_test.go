@@ -110,6 +110,67 @@ func TestHandlerHoverPackageOffReturnsNull(t *testing.T) {
 	}
 }
 
+// TestHandlerHoverWellknownFallback covers the curated well-known fallback: an
+// attr absent from the dataset (runtimeShell is not a derivation, so it is never
+// in packages.json) still hovers, inside a string interpolation, and carries no
+// channel-provenance line even when a channel is recorded.
+func TestHandlerHoverWellknownFallback(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	const src = `{ pkgs, ... }: { x = "${pkgs.runtimeShell}"; }`
+	root := t.TempDir()
+	modPath := filepath.Join(root, "home.nix")
+	writeFile(t, modPath, src)
+	initWithPackages(t, handler, root, packagesFixturePath(t))
+	// Record a channel as auto mode would: a well-known fallback hover must still
+	// not claim it, since the curated table is not channel data.
+	handler.setPackagesChannel("nixpkgs-unstable")
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, src)
+
+	line, char := posOf(t, src, "runtimeShell", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want well-known fallback hover")
+	}
+	value := hover.Contents.Value
+	for _, want := range []string{"**runtimeShell**", "not a derivation"} {
+		if !strings.Contains(value, want) {
+			t.Errorf("hover value missing %q:\n%s", want, value)
+		}
+	}
+	if strings.Contains(value, "channel data") {
+		t.Errorf("well-known fallback must not carry channel provenance:\n%s", value)
+	}
+}
+
+// TestHandlerHoverWellknownUnderWithPkgs confirms the fallback also fires on the
+// bare-identifier resolution path: it applies after attr resolution, so a
+// `with pkgs;` name that misses the dataset lands in the curated table the same
+// way a select does.
+func TestHandlerHoverWellknownUnderWithPkgs(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	const src = "{ pkgs, ... }: { shell = with pkgs; mkShell {}; }"
+	root := t.TempDir()
+	modPath := filepath.Join(root, "shell.nix")
+	writeFile(t, modPath, src)
+	initWithPackages(t, handler, root, packagesFixturePath(t))
+	modURI := mustURI(t, modPath)
+	openDocument(t, handler, modURI, src)
+
+	line, char := posOf(t, src, "mkShell", 0)
+	hover := requestHover(t, handler, modURI, line, char+1)
+	if hover == nil {
+		t.Fatal("hover = null, want well-known fallback hover for with-pkgs mkShell")
+	}
+	if !strings.Contains(hover.Contents.Value, "development-shell") {
+		t.Errorf("hover value missing mkShell description:\n%s", hover.Contents.Value)
+	}
+}
+
 // withPkgsFixture supplies `go` through a `with pkgs;` scope rather than a
 // `pkgs.<attr>` select, exercising the bare-identifier package hover path.
 const withPkgsFixture = "{ pkgs, ... }: { corePackages = with pkgs; [ nodejs_22 go ]; }"

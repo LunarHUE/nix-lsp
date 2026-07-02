@@ -44,22 +44,31 @@ func (h *Handler) packageHover(ctx context.Context, uri string, pos syntax.Posit
 			return nil
 		}
 	}
-	doc, ok := index.Lookup(attr)
-	if !ok {
-		return nil
+	doc, fromDataset := index.Lookup(attr)
+	if !fromDataset {
+		// Not in the dataset: fall back to the curated well-known table of stable
+		// non-derivation attrs (runtimeShell, lib, callPackage, ...), which never
+		// appear in packages.json because they are not derivations.
+		if doc, ok = packages.Wellknown(attr); !ok {
+			return nil
+		}
 	}
 	return &Hover{
-		Contents: MarkupContent{Kind: "markdown", Value: h.packageHoverMarkdown(doc)},
+		Contents: MarkupContent{Kind: "markdown", Value: h.packageHoverMarkdown(doc, fromDataset)},
 		Range:    toProtocolRange(r),
 	}
 }
 
-// packageHoverMarkdown renders a package Doc plus, when the dataset's channel is
-// known (auto mode only), a provenance line that keeps channel data from being
-// read as evaluated truth. Explicit-path and fixture loads record no channel and
-// so append nothing.
-func (h *Handler) packageHoverMarkdown(doc *packages.Doc) string {
+// packageHoverMarkdown renders a package Doc plus, for dataset hits when the
+// dataset's channel is known (auto mode only), a provenance line that keeps
+// channel data from being read as evaluated truth. Explicit-path and fixture
+// loads record no channel, and well-known fallback docs are curated rather than
+// channel data, so neither carries the line.
+func (h *Handler) packageHoverMarkdown(doc *packages.Doc, fromDataset bool) string {
 	value := doc.Markdown()
+	if !fromDataset {
+		return value
+	}
 	if channel := h.packagesChannelString(); channel != "" {
 		value += "\n\n*" + channel + " channel data — an overlay may change the actual version*"
 	}
