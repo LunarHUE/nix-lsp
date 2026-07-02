@@ -10,3 +10,5 @@ coverage.out
 .vscode/
 .direnv/
 .cache/
+
+.envrc
