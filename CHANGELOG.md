@@ -7,6 +7,9 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-02 (evening)
 
+- **Lazy completion documentation** (`completionItem/resolve`): completion
+  lists ship lean items and the full markdown documentation loads only for the
+  item you highlight, using the same renderers as hover.
 - **Clickable hover links**: package homepages render as markdown links, and
   option "Declared in" paths link to the declaring module's source on the
   dataset channel's branch of nixpkgs on GitHub (plain text in offline/fixture

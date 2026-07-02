@@ -82,11 +82,13 @@ func (h *Handler) optionPathCompletion(cctx scopes.CompletionContext) *Completio
 			TextEdit: &TextEditItem{Range: edit, NewText: child.Name},
 		}
 		if child.Doc != nil {
-			// A documented node is a leaf even when it also has sub-options.
+			// A documented node is a leaf even when it also has sub-options. Its
+			// markdown is filled lazily on completionItem/resolve, so the item ships
+			// with only the type detail and the concrete path resolve looks up.
 			path := append(append([]string{}, cctx.Prefix...), child.Name)
 			item.Kind = completionItemKindField
 			item.Detail = child.Doc.Type
-			item.Documentation = &MarkupContent{Kind: "markdown", Value: child.Doc.MarkdownFor(path)}
+			item.Data = &CompletionData{Source: "option", Path: path}
 			item.SortText = "0" + child.Name
 		} else {
 			item.Kind = completionItemKindModule
@@ -151,12 +153,11 @@ func (h *Handler) withPkgsCompletion(cctx scopes.CompletionContext) *CompletionL
 			continue
 		}
 		seen[name] = true
-		doc, _ := packages.Wellknown(name)
 		items = append(items, CompletionItem{
-			Label:         name,
-			Kind:          completionItemKindFunction,
-			TextEdit:      &TextEditItem{Range: edit, NewText: name},
-			Documentation: &MarkupContent{Kind: "markdown", Value: doc.Markdown()},
+			Label:    name,
+			Kind:     completionItemKindFunction,
+			TextEdit: &TextEditItem{Range: edit, NewText: name},
+			Data:     &CompletionData{Source: "wellknown", Attr: name},
 		})
 	}
 	if len(items) == 0 {
@@ -202,9 +203,11 @@ func pkgSegmentCompletion(index *packages.Index, typed, partial string, replace 
 		if hasDot {
 			item.Kind = completionItemKindModule
 		} else {
+			// A full-attr leaf keeps its tiny version detail (it drives selection);
+			// the markdown is filled lazily on resolve via the full dotted attr.
 			item.Kind = completionItemKindField
 			item.Detail = doc.Version
-			item.Documentation = &MarkupContent{Kind: "markdown", Value: doc.Markdown()}
+			item.Data = &CompletionData{Source: "package", Attr: doc.Attr}
 		}
 		items = append(items, item)
 	}

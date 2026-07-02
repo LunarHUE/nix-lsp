@@ -29,12 +29,25 @@ const (
 // TextEdit (so a partially typed segment is replaced rather than appended),
 // optional Documentation, and SortText.
 type CompletionItem struct {
-	Label         string         `json:"label"`
-	Kind          int            `json:"kind,omitempty"`
-	Detail        string         `json:"detail,omitempty"`
-	Documentation *MarkupContent `json:"documentation,omitempty"`
-	TextEdit      *TextEditItem  `json:"textEdit,omitempty"`
-	SortText      string         `json:"sortText,omitempty"`
+	Label         string          `json:"label"`
+	Kind          int             `json:"kind,omitempty"`
+	Detail        string          `json:"detail,omitempty"`
+	Documentation *MarkupContent  `json:"documentation,omitempty"`
+	TextEdit      *TextEditItem   `json:"textEdit,omitempty"`
+	SortText      string          `json:"sortText,omitempty"`
+	Data          *CompletionData `json:"data,omitempty"`
+}
+
+// CompletionData is the opaque payload a documented completion item carries so
+// completionItem/resolve can fill in its Documentation on demand rather than
+// rendering full markdown for every item in the list. LSP round-trips the data
+// field verbatim, so it stays minimal and versionless: Source selects the
+// dataset ("option", "package", or "wellknown") and Path/Attr identify the entry
+// to look up. Items with nothing to resolve (groups, locals) carry no Data.
+type CompletionData struct {
+	Source string   `json:"source"`
+	Path   []string `json:"path,omitempty"`
+	Attr   string   `json:"attr,omitempty"`
 }
 
 // TextEditItem is an LSP TextEdit: the range to replace and the text to insert.

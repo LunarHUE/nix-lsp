@@ -376,10 +376,12 @@ type ExecuteCommandOptions struct {
 	Commands []string `json:"commands"`
 }
 
-// CompletionOptions advertises textDocument/completion support and the
-// characters that trigger it.
+// CompletionOptions advertises textDocument/completion support, the characters
+// that trigger it, and whether the server resolves items lazily via
+// completionItem/resolve (filling documentation only when an item is selected).
 type CompletionOptions struct {
 	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+	ResolveProvider   bool     `json:"resolveProvider,omitempty"`
 }
 
 type ServerInfo struct {

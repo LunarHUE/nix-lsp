@@ -189,7 +189,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				WorkspaceSymbolProvider:   true,
 				CodeActionProvider:        true,
 				ExecuteCommandProvider:    &lsp.ExecuteCommandOptions{Commands: []string{commandGitAdd}},
-				CompletionProvider:        &lsp.CompletionOptions{TriggerCharacters: []string{"\"", "."}},
+				CompletionProvider:        &lsp.CompletionOptions{TriggerCharacters: []string{"\"", "."}, ResolveProvider: true},
 			},
 			ServerInfo: &lsp.ServerInfo{
 				Name: "nix-lsp",
@@ -209,6 +209,8 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 		return h.hover(ctx, params)
 	case "textDocument/completion":
 		return h.completion(ctx, params)
+	case "completionItem/resolve":
+		return h.completionResolve(params)
 	case "textDocument/documentHighlight":
 		return h.documentHighlight(ctx, params)
 	case "textDocument/references":
