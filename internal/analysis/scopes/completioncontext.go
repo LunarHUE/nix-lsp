@@ -136,10 +136,14 @@ func dotCompletion(tree *syntax.Tree, content []byte, dotByte int, partial strin
 	case "attrpath":
 		return classifyAttrpathSegment(parent, chain, partial, replace)
 	case "ERROR":
-		if chain.Kind() != "identifier" {
-			return CompletionContext{}, false
+		// The broken binding path left of the dot survives inside the ERROR as a
+		// run of identifier / string segments, or — two or more segments deep
+		// when the enclosing attrset still parses — as a whole attrpath node
+		// whose trailing dot became a separate sibling ERROR.
+		switch chain.Kind() {
+		case "identifier", "string_expression", "attrpath":
+			return classifyFlattened(parent, chain, content, partial, replace)
 		}
-		return classifyFlattened(parent, chain, content, partial, replace)
 	}
 	return CompletionContext{}, false
 }
@@ -196,9 +200,14 @@ func classifyAttrpathSegment(attrpath, chain syntax.Node, partial string, replac
 	return CompletionContext{}, false
 }
 
-// classifyFlattened handles the fully broken shape where a trailing dot defeated
-// the parser and left a bare identifier sequence inside an ERROR
-// (`{ networking.firewall. }`). It gathers the dot-contiguous run ending at chain.
+// classifyFlattened handles the broken shapes where a trailing dot defeated the
+// parser and left the typed path inside an ERROR: a bare identifier sequence
+// (`{ networking.firewall. }`), a surviving attrpath node (`{ config, ... }:
+// { networking.firewall. }`), or a flattened mix in which enclosing bindings
+// appear as earlier siblings (`{ networking = { firewall. }; }` -> ERROR
+// [attrpath "networking", identifier "firewall"]). It gathers the contiguous
+// run ending at chain, crossing `= {` binding hops, then prepends any bindings
+// that survived outside the ERROR.
 func classifyFlattened(errNode, chain syntax.Node, content []byte, partial string, replace syntax.Range) (CompletionContext, bool) {
 	segs, ok := gatherFlatSegments(errNode, chain, content)
 	if !ok {
@@ -460,28 +469,51 @@ func prependEnclosingBindings(acc []string, set syntax.Node) ([]string, bool) {
 	return acc, true
 }
 
-// gatherFlatSegments collects the dot-contiguous run of static segments ending at
-// chain within a flattened ERROR node. Segments separated by anything other than
-// a single dot break the run; a dynamic segment bails.
+// gatherFlatSegments collects the contiguous run of static segments ending at
+// chain within a flattened ERROR node. Children joined by a single dot extend
+// the same attribute path; children joined by `= {` (or `= rec {`) are the
+// attrpaths of enclosing bindings that collapsed into the same ERROR, so their
+// segments are prepended and the run continues outward. Any other separator
+// stops the run; a dynamic or otherwise non-static child inside the run bails.
 func gatherFlatSegments(errNode, chain syntax.Node, content []byte) ([]string, bool) {
 	children := errNode.NamedChildren()
 	end := indexOfChild(errNode, chain)
 	if end < 0 {
 		return nil, false
 	}
-	start := end
-	for start > 0 && onlyDotBetween(content, children[start-1].Range().End, children[start].Range().Start) {
-		start--
+	segs, ok := flatChildSegments(children[end])
+	if !ok {
+		return nil, false
 	}
-	segs := make([]string, 0, end-start+1)
-	for i := start; i <= end; i++ {
-		v, ok := segmentValue(children[i])
+	for i := end; i > 0; i-- {
+		prevEnd := children[i-1].Range().End
+		curStart := children[i].Range().Start
+		if !onlyDotBetween(content, prevEnd, curStart) &&
+			!bindingOpenBetween(content, prevEnd, curStart) {
+			break
+		}
+		prev, ok := flatChildSegments(children[i-1])
 		if !ok {
 			return nil, false
 		}
-		segs = append(segs, v)
+		segs = append(prev, segs...)
 	}
 	return segs, true
+}
+
+// flatChildSegments returns the static path segments contributed by one child of
+// a flattened ERROR: a single identifier or string segment, or a surviving
+// attrpath node's full segment list. Anything else (an interpolation, formals, a
+// value expression) yields false.
+func flatChildSegments(child syntax.Node) ([]string, bool) {
+	if child.Kind() == "attrpath" {
+		return staticAttrpathSegments(child)
+	}
+	v, ok := segmentValue(child)
+	if !ok {
+		return nil, false
+	}
+	return []string{v}, true
 }
 
 // onlyDotBetween reports whether the source between two positions is exactly one
@@ -502,6 +534,42 @@ func onlyDotBetween(content []byte, from, to syntax.Position) bool {
 		}
 	}
 	return dots == 1
+}
+
+// bindingOpenBetween reports whether the source between two positions is exactly
+// `= {` or `= rec {` (with arbitrary whitespace): the separator a flattened
+// enclosing binding leaves between its attrpath and its nested set's first
+// segment inside a shared ERROR node.
+func bindingOpenBetween(content []byte, from, to syntax.Position) bool {
+	a, b := offsetAt(content, from), offsetAt(content, to)
+	if a < 0 || b > len(content) || a > b {
+		return false
+	}
+	rest := skipSpace(content[a:b])
+	if len(rest) == 0 || rest[0] != '=' {
+		return false
+	}
+	rest = skipSpace(rest[1:])
+	if len(rest) >= 4 && string(rest[:3]) == "rec" && isSpaceByte(rest[3]) {
+		rest = skipSpace(rest[3:])
+	}
+	if len(rest) == 0 || rest[0] != '{' {
+		return false
+	}
+	return len(skipSpace(rest[1:])) == 0
+}
+
+// skipSpace returns b with leading whitespace removed.
+func skipSpace(b []byte) []byte {
+	for len(b) > 0 && isSpaceByte(b[0]) {
+		b = b[1:]
+	}
+	return b
+}
+
+// isSpaceByte reports whether b is an ASCII whitespace byte.
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 // baseName returns the identifier text of a variable_expression.

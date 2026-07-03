@@ -72,6 +72,52 @@ func TestCompletionContextAt(t *testing.T) {
 			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
 			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
 
+		// Trailing dot two or more segments deep in the shapes where the
+		// enclosing attrset (or a sibling binding) survives the broken parse: the
+		// typed path is then a whole attrpath node inside an ERROR, with the dot
+		// in a separate sibling ERROR.
+		{"option two-deep dot under wrapper", "{ config, ... }:\n{\n  networking.firewall.\n}\n",
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
+		{"option three-deep dot", `{ networking.firewall.allowedTCPPorts. }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "allowedTCPPorts.", 0) },
+			true, OptionPath, []string{"networking", "firewall", "allowedTCPPorts"}, "", "", true},
+		{"option three-deep dot terse", `{ a.b.c. }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "a.b.c.", 0) },
+			true, OptionPath, []string{"a", "b", "c"}, "", "", true},
+		{"option two-deep dot after sibling binding", "{\n  services.openssh.enable = true;\n  networking.firewall.\n}\n",
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
+
+		// Nested attrset + trailing dot: the enclosing binding's attrpath
+		// collapses into the same ERROR, separated by `= {`.
+		{"option nested attrset dot", `{ networking = { firewall. }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
+		{"option nested attrset dot multiline", "{\n  networking = {\n    firewall.\n  };\n}\n",
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
+		{"option doubly nested attrset dot", `{ a = { b = { c. }; }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "c.", 0) },
+			true, OptionPath, []string{"a", "b", "c"}, "", "", true},
+		{"option nested attrset deep dot", `{ networking = { firewall.allowedTCPPorts. }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "allowedTCPPorts.", 0) },
+			true, OptionPath, []string{"networking", "firewall", "allowedTCPPorts"}, "", "", true},
+		{"option nested rec attrset dot", `{ networking = rec { firewall. }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
+
+		// Config-prefixed binding attrpath with trailing dot: config stripped.
+		{"option config-prefixed deep dot", `{ config.networking.firewall. }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "firewall.", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "", "", true},
+
+		// Partial typed after a deep dot: pinned (already worked via the
+		// attrpath-under-ERROR segment path).
+		{"option deep partial", `{ networking.firewall.allo }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "allo", 0) },
+			true, OptionPath, []string{"networking", "firewall"}, "allo", "allo", false},
+
 		// OptionPath via config-rooted select chains.
 		{"config select trailing dot", `x = config.networking.`,
 			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "networking.", 0) },

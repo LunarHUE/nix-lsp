@@ -68,6 +68,14 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
   handler errors log to stderr and never tear down the server; the binary
   accepts `--stdio` for client compatibility.
 
+### Fixed — 2026-07-03
+
+- Completion now fires on trailing dots at any depth (`networking.firewall.`,
+  nested attrsets, `config.`-prefixed paths, quoted segments like
+  `services."my-svc".`) — previously only a single-segment trailing dot
+  classified, because deeper mid-edit parses produce different error-tree
+  shapes.
+
 ### Fixed — 2026-07-02
 
 - Extension no longer passes `--stdio` to a server that rejected it (crash
