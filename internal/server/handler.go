@@ -70,6 +70,16 @@ type Handler struct {
 	optionsDownloadEnabled bool
 	optionsCtx             context.Context
 	optionsCancel          context.CancelFunc
+
+	// bgCtx is the parent context for coalesced background diagnostics work. It is
+	// cancelled by Close so an in-flight recompute stops promptly on shutdown; the
+	// diag coalescer derives a per-iteration cancellable child from it so a newer
+	// edit can also abandon a superseded compute. Threading a real context here
+	// (rather than context.Background()) is what gives that per-iteration child an
+	// effective parent, so cancellation flows to the memo query boundaries and the
+	// tree-sitter parse.
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
 	// optionsChannel names the channel an auto-mode options load resolved the
 	// dataset from (e.g. "nixos-25.05"). It is recorded only when auto mode
 	// resolves the channel and drives option hover's "Declared in" source links;
@@ -140,6 +150,7 @@ func NewHandler() *Handler {
 		diagPublished:  make(chan struct{}),
 	}
 	handler.optionsCtx, handler.optionsCancel = context.WithCancel(context.Background())
+	handler.bgCtx, handler.bgCancel = context.WithCancel(context.Background())
 	// Give the publisher a way to ask for a URI's CURRENT document version at
 	// publish time, so it can drop diagnostics computed from a superseded buffer.
 	// Injected as a func (like the notifier) rather than coupling the publisher to
@@ -155,7 +166,11 @@ func NewHandler() *Handler {
 // loop). It reports whether a worker will run the task; the diagnostics coalescer
 // re-arms on a false (queue-full) return.
 func (h *Handler) enqueueBackground(run func(context.Context)) bool {
-	_, ok := h.tasks.TrySubmit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+	// Submit under the handler-lifetime bgCtx (not context.Background()) so the ctx
+	// the worker hands to run — and the per-iteration child the diag coalescer
+	// derives from it — has an effective parent: Close cancels bgCtx, aborting any
+	// in-flight recompute instead of letting a stale multi-second compute run out.
+	_, ok := h.tasks.TrySubmit(h.bgCtx, lsp.LaneBackground, func(ctx context.Context) error {
 		run(ctx)
 		return nil
 	})
@@ -184,6 +199,7 @@ func (h *Handler) Close() {
 	// Cancel before stopping the scheduler so an in-flight options download aborts
 	// rather than making the scheduler's Stop wait out its timeout.
 	h.optionsCancel()
+	h.bgCancel()
 	h.tasks.Stop()
 	h.publisher.Stop()
 }

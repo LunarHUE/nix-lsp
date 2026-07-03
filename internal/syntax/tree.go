@@ -67,13 +67,26 @@ type Node struct {
 	nav     *sync.Mutex
 }
 
-// Parse parses Nix source into a syntax tree.
+// Parse parses Nix source into a syntax tree with a background context, so the
+// parse always runs to completion. Call sites on a cancellable compute path use
+// ParseCtx instead, so a parse superseded by a newer edit can be abandoned
+// mid-flight rather than burning CPU to completion.
 func Parse(content []byte) (*Tree, error) {
+	return ParseCtx(context.Background(), content)
+}
+
+// ParseCtx parses Nix source into a syntax tree, honoring ctx. If ctx is
+// cancelled while the parse is in progress, tree-sitter halts and returns a nil
+// tree; ParseCtx maps that to a wrapped context error (errors.Is(err,
+// context.Canceled) holds) and never returns a partial or nil tree presented as
+// success — a non-nil *Tree always came from a completed parse. Callers route
+// the cancellation error to a quiet early-out, not a broken-file diagnostic.
+func ParseCtx(ctx context.Context, content []byte) (*Tree, error) {
 	parser := sitter.NewParser()
 	parser.SetLanguage(nixLanguage())
 
 	copied := cloneBytes(content)
-	tree, err := parser.ParseCtx(context.Background(), nil, copied)
+	tree, err := parser.ParseCtx(ctx, nil, copied)
 	if err != nil {
 		return nil, fmt.Errorf("parse nix: %w", err)
 	}

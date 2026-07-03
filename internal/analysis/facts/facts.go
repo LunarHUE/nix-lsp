@@ -239,7 +239,11 @@ func parseTree(ctx context.Context, q *memo.Context, key memo.Key) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return syntax.Parse(input.Content)
+	// Honor ctx: a compute superseded by a newer edit cancels its ctx, and a
+	// large file's parse is the single longest step on the compute path. On
+	// cancellation ParseCtx returns a context error (not cached by the memo
+	// engine), so a fresh compute reparses the newest content.
+	return syntax.ParseCtx(ctx, input.Content)
 }
 
 func importEdges(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
