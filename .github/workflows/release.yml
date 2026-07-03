@@ -38,8 +38,8 @@ jobs:
             target: darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Build platform VSIX (tests run in the nix check phase)
         run: nix build .#vsix --print-build-logs
@@ -50,7 +50,7 @@ jobs:
           nix build .#nixls
           cp result/bin/nixls nixls-${{ matrix.target }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nixls-${{ matrix.target }}
           path: |
@@ -61,8 +61,8 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Build server
@@ -70,7 +70,7 @@ jobs:
         run: |
           go test ./...
           go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o editors/vscode/bin/nixls.exe ./cmd/nixls
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: Package platform VSIX
@@ -85,7 +85,7 @@ jobs:
         run: |
           cp editors/vscode/nixls-win32-x64.vsix .
           cp editors/vscode/bin/nixls.exe nixls-win32-x64.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nixls-win32-x64
           path: |
@@ -97,12 +97,12 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       # On a `release` event this updates the existing (pre)release in place,
       # keeping its prerelease flag; on a tag push it creates the release.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
           files: |
