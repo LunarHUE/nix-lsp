@@ -8,6 +8,9 @@
 # to the release, preserving its prerelease flag. A workflow_dispatch run
 # builds artifacts only (no release to attach to). Marketplace publishing is
 # a manual `vsce publish` on the produced VSIXes (or add VSCE_PAT later).
+# Every job has a timeout so a hung nix installer/build can never require a
+# manual cancel; the Nix store is cached on Linux runners only (measured to
+# help there, not on macOS).
 name: release
 
 on:
@@ -37,9 +40,30 @@ jobs:
           - os: macos-14
             target: darwin-arm64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    # actions: write lets the cache step purge stale cache entries.
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+      # Cache the Nix store on Linux only (no measured speedup on macOS).
+      - name: Cache Nix store
+        if: runner.os == 'Linux'
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'go.sum', 'editors/vscode/package-lock.json') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+          # Collect garbage down to ~3G before saving a new cache.
+          gc-max-store-size-linux: 3G
+          # Purge stale entries for this key prefix so the cache stays under
+          # GitHub's 10G limit; never purge the current primary key.
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
+          purge-created: 0
+          purge-last-accessed: P1DT12H
+          purge-primary-key: never
 
       - name: Build platform VSIX (tests run in the nix check phase)
         run: nix build .#vsix --print-build-logs
@@ -60,6 +84,7 @@ jobs:
   # Windows cannot run nix; build the same artifact shape with Go + npm.
   windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -95,6 +120,7 @@ jobs:
   release:
     needs: [nix, windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     steps:
       - uses: actions/download-artifact@v8
