@@ -159,6 +159,80 @@ func TestAnalyzeIgnoresStringInterpolationPathText(t *testing.T) {
 	}
 }
 
+func TestAnalyzeAllPathsBareBindingValue(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "flake.nix"), "")
+	target := writeFile(t, filepath.Join(root, "modules", "service.nix"), "{}")
+	content := "{ nixosModules.web-service = ./modules/service.nix; }"
+
+	edges := analyzeAll(t, source, content, nil)
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d, want 1", len(edges))
+	}
+	if edges[0].Literal != "./modules/service.nix" || !edges[0].Exists {
+		t.Fatalf("edge = %+v", edges[0])
+	}
+	if edges[0].TargetPath != normalize(t, target) {
+		t.Fatalf("target = %q, want %q", edges[0].TargetPath, normalize(t, target))
+	}
+	if edges[0].ViaDefault {
+		t.Fatalf("ViaDefault = true, want false for a direct file")
+	}
+}
+
+func TestAnalyzeAllPathsDirectoryDefault(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "flake.nix"), "")
+	target := writeFile(t, filepath.Join(root, "modules", "default.nix"), "{}")
+	content := "{ a = ./modules; }"
+
+	edges := analyzeAll(t, source, content, nil)
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d, want 1", len(edges))
+	}
+	if !edges[0].Exists || !edges[0].ViaDefault {
+		t.Fatalf("edge = %+v, want existing directory import", edges[0])
+	}
+	if edges[0].TargetPath != normalize(t, target) {
+		t.Fatalf("target = %q, want %q", edges[0].TargetPath, normalize(t, target))
+	}
+}
+
+func TestAnalyzeAllPathsSkipsInterpolatedAndSearchPaths(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "flake.nix"), "")
+	content := "{ a = ./x/${n}.nix; b = <nixpkgs>; c = ~/home.nix; }"
+
+	edges := analyzeAll(t, source, content, nil)
+	if len(edges) != 0 {
+		t.Fatalf("edges = %+v, want none (interpolated / search / home paths skipped)", edges)
+	}
+}
+
+func TestAnalyzeAllPathsMissingTarget(t *testing.T) {
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "flake.nix"), "")
+	content := "{ a = ./missing.nix; }"
+
+	edges := analyzeAll(t, source, content, nil)
+	if len(edges) != 1 || edges[0].Exists {
+		t.Fatalf("edges = %+v, want one non-existent edge", edges)
+	}
+}
+
+func analyzeAll(t *testing.T, source string, content string, tracked map[string]bool) []Edge {
+	t.Helper()
+	tree, err := syntax.Parse([]byte(content))
+	if err != nil {
+		t.Fatalf("Parse error = %v", err)
+	}
+	edges, err := AnalyzeAllPaths(source, tree, tracked)
+	if err != nil {
+		t.Fatalf("AnalyzeAllPaths error = %v", err)
+	}
+	return edges
+}
+
 func analyze(t *testing.T, source string, content string, tracked map[string]bool) ([]Edge, error) {
 	t.Helper()
 	tree, err := syntax.Parse([]byte(content))

@@ -19,6 +19,9 @@ type Edge struct {
 	TargetURI  string
 	Exists     bool
 	GitTracked bool
+	// ViaDefault reports that the literal named an existing directory and the
+	// target was resolved to that directory's default.nix.
+	ViaDefault bool
 }
 
 // Analyze extracts import-like relative paths from tree and resolves them
@@ -59,6 +62,44 @@ func Analyze(sourcePath string, tree *syntax.Tree, tracked map[string]bool) ([]E
 			edges = append(edges, listEdges...)
 		}
 
+		return true
+	})
+	if analyzeErr != nil {
+		return nil, analyzeErr
+	}
+	return edges, nil
+}
+
+// AnalyzeAllPaths extracts an edge for every static relative path literal in
+// tree, regardless of the syntactic context it appears in. Unlike Analyze,
+// which is limited to import/imports/callPackage shapes for the flake
+// untracked-import diagnostic, this powers go-to-definition and hover on any
+// path literal (a bare binding value, an arbitrary list element, and so on). It
+// reuses Analyze's resolution and git-tracking rules exactly, so interpolated
+// paths and paths written inside strings are skipped.
+func AnalyzeAllPaths(sourcePath string, tree *syntax.Tree, tracked map[string]bool) ([]Edge, error) {
+	normalizedSource, err := vfs.NormalizePath(sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	if tree == nil {
+		return nil, nil
+	}
+
+	var edges []Edge
+	var analyzeErr error
+	tree.Walk(func(node syntax.Node) bool {
+		if analyzeErr != nil {
+			return false
+		}
+		edge, ok, err := edgeForPath(normalizedSource, node, tracked)
+		if err != nil {
+			analyzeErr = err
+			return false
+		}
+		if ok {
+			edges = append(edges, edge)
+		}
 		return true
 	})
 	if analyzeErr != nil {
@@ -115,7 +156,7 @@ func edgeForPath(sourcePath string, node syntax.Node, tracked map[string]bool) (
 		return Edge{}, false, err
 	}
 
-	resolvedTarget, exists := resolveImportTarget(normalizedTarget)
+	resolvedTarget, exists, viaDefault := resolveImportTarget(normalizedTarget)
 	uri := ""
 	gitTracked := false
 	if exists {
@@ -138,23 +179,28 @@ func edgeForPath(sourcePath string, node syntax.Node, tracked map[string]bool) (
 		TargetURI:  uri,
 		Exists:     exists,
 		GitTracked: gitTracked,
+		ViaDefault: viaDefault,
 	}, true, nil
 }
 
-func resolveImportTarget(path string) (string, bool) {
+// resolveImportTarget resolves path to a concrete file: a regular file is
+// returned as-is; an existing directory resolves to its default.nix when one
+// exists (viaDefault=true) and otherwise to the directory itself. A missing
+// path is returned unchanged with exists=false.
+func resolveImportTarget(path string) (resolved string, exists, viaDefault bool) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return path, false
+		return path, false, false
 	}
 	if !info.IsDir() {
-		return path, true
+		return path, true, false
 	}
 
 	defaultPath := filepath.Join(path, "default.nix")
 	if info, err := os.Stat(defaultPath); err == nil && !info.IsDir() {
-		return defaultPath, true
+		return defaultPath, true, true
 	}
-	return path, true
+	return path, true, false
 }
 
 func unwrapParenthesized(node syntax.Node) syntax.Node {

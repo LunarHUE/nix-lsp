@@ -21,7 +21,9 @@
         web = pkgs.callPackage ./pkgs/web { };
       };
 
-      # A module shipped by the monorepo; option hover works inside it.
+      # A module shipped by the monorepo; option hover works inside it, and
+      # Ctrl+click or hover on the ./modules/service.nix path itself now follows
+      # to the file.
       nixosModules.web-service = ./modules/service.nix;
 
       lib = helpers;

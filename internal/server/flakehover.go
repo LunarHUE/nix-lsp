@@ -49,6 +49,15 @@ func (h *Handler) hover(ctx context.Context, params json.RawMessage) (any, error
 		}
 	}
 
+	// Path-literal hover reports where a static path expression resolves. A path
+	// literal never coincides with a package select, option path, or bound
+	// identifier, so its position among those hovers is behavior-neutral; it sits
+	// just after the root-flake input hover so the one genuine overlap (a path used
+	// as an input url on the root flake.nix) still resolves to the input hover.
+	if hover := h.pathHover(ctx, decoded.TextDocument.URI, pos); hover != nil {
+		return hover, nil
+	}
+
 	// Package-version hover for a `pkgs.<attr>` select, then NixOS
 	// option-documentation hover. The two cannot both match a position: option
 	// paths never start at a `pkgs` select base.

@@ -70,6 +70,12 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-03
 
+- **Path-literal navigation**: go-to-definition follows any static path
+  literal to its target (bare binding values like
+  `nixosModules.x = ./module.nix`, list elements, directory imports via
+  `default.nix`), and hovering a path shows where it resolves plus its status
+  (exists / missing / not git-tracked). Interpolated paths and `<...>` search
+  paths stay unfollowed.
 - **Typo diagnostics with quick fixes**: a misspelled option path in a NixOS
   module (`networking.firewal.enable`) warns `unknown-option` with "Change to
   'firewall'" fixes, and a misspelled `pkgs.<attr>` (`pkgs.htoop`) warns

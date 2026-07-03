@@ -203,6 +203,17 @@ func (h *Handler) definition(ctx context.Context, params json.RawMessage) (any, 
 	if location := importDefinitionAt(edges, pos); location != nil {
 		return location, nil
 	}
+	// General path-literal fallback: gd on any static path literal that resolves to
+	// an existing file (or a directory's default.nix) jumps to that file's top,
+	// regardless of syntactic context. The import/imports/callPackage edges above
+	// are a subset of these; this additionally covers a bare binding value, an
+	// arbitrary list element, and so on. It reuses importDefinitionAt so a missing
+	// or interpolated target still yields null.
+	if pathEdges, ok := h.pathEdges(ctx, uri); ok {
+		if location := importDefinitionAt(pathEdges, pos); location != nil {
+			return location, nil
+		}
+	}
 	// Finally, gd on the attribute part of a select expression (`lib.foo`)
 	// resolves through an import into the target file, or into a local attrset.
 	if location := h.selectDefinition(ctx, fileID, uri, pos); location != nil {
