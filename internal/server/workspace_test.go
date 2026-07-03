@@ -309,6 +309,29 @@ func TestHandlerWatchedFilesGitTrackRefreshClearsUntrackedWarning(t *testing.T) 
 	waitForPublish(t, notifier, importerURI, 0)
 }
 
+// TestHandlerGitIndexWatchClearsUntrackedWarningWithoutEdit replays the reported
+// bug: a terminal `git add` (no editor edit) followed only by a .git/index
+// watched-file change must clear the open file's untracked-import warning. Before
+// the git-state input + .git/index watcher this required the quick fix or a
+// restart.
+func TestHandlerGitIndexWatchClearsUntrackedWarningWithoutEdit(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	notifier := &captureNotifier{messages: make(chan publishDiagnosticsParams, 64)}
+	handler.SetNotifier(notifier)
+
+	importerURI, lib, root := untrackedImportFixture(t, handler, notifier)
+
+	// Stage the target outside the editor, then deliver only the .git/index change
+	// (no textDocument/didChange). The open importer's warning must clear.
+	runGit(t, root, "add", lib)
+	sendWatchedFiles(t, handler, []map[string]any{
+		{"uri": mustURI(t, filepath.Join(root, ".git", "index")), "type": 2},
+	})
+
+	waitForPublish(t, notifier, importerURI, 0)
+}
+
 func TestHandlerFlakeDiagnosticsAndLockRefresh(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()

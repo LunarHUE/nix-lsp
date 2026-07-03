@@ -76,9 +76,17 @@ export function activate(context: vscode.ExtensionContext): void {
   // git operations, out-of-editor edits, `nix flake lock`) reach the server as
   // workspace/didChangeWatchedFiles and refresh diagnostics. Created once and
   // reused across restarts; the client never disposes caller-provided watchers.
+  //
+  // The **/.git/index watcher is load-bearing: a terminal `git add`/commit
+  // mutates .git/index (not any .nix file), so without this watcher the server
+  // never learns the tracked set changed and an untracked-import warning would
+  // linger until an edit or restart. VS Code's default files.watcherExclude does
+  // NOT exclude .git/index, so this watcher does fire; the server maps the event
+  // to a git-state refresh rather than to a workspace .nix file.
   const watchers = [
     vscode.workspace.createFileSystemWatcher("**/*.nix"),
     vscode.workspace.createFileSystemWatcher("**/flake.lock"),
+    vscode.workspace.createFileSystemWatcher("**/.git/index"),
   ];
   context.subscriptions.push(...watchers);
 

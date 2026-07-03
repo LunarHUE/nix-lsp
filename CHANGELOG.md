@@ -126,6 +126,11 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Fixed — 2026-07-03
 
+- **Stale untracked-import warning after terminal `git add`**: git state was
+  invisible to both the file watcher (which ignored `.git`) and the memoized
+  import analysis (git-tracking was baked into cached edges). The extension
+  now watches `.git/index`, and git state is a real input to the analysis, so
+  a terminal `git add`/`commit` clears the warning with no edit needed.
 - **Embedded bash now covers the full shell-attr family**: `shellInit`,
   `interactiveShellInit` and friends, `extraCommands`, and all stdenv builder
   phases (`buildPhase`, `postInstall`, ...) highlight as bash — 41 trigger

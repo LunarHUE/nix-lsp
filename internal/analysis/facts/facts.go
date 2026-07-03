@@ -24,6 +24,7 @@ const (
 	QueryFileDiagnostics = "FileDiagnostics"
 	QueryFlakeLock       = "FlakeLock"
 	QueryFlakeModel      = "FlakeModel"
+	QueryGitState        = "GitState"
 )
 
 const workspaceInputID = "current"
@@ -31,6 +32,10 @@ const workspaceInputID = "current"
 // flakeLockInputID keys the single current flake.lock input, mirroring the
 // workspace singleton-input pattern.
 const flakeLockInputID = "current"
+
+// gitStateInputID keys the single current git-state version input, mirroring the
+// workspace singleton-input pattern.
+const gitStateInputID = "current"
 
 // fileIDSeparator joins a file's path and content hash into a single memo key
 // ID. Path is a genuine input to path-dependent queries (relative import
@@ -73,6 +78,17 @@ func SetFlakeLock(engine *memo.Engine, content []byte) {
 	engine.SetInput(FlakeLockKey(), cloneBytes(content))
 }
 
+// SetGitState stores the current git-state version token as the git-state input.
+// The token is an opaque version string derived by the server from the workspace
+// git index (see the server's index stat); a change to it invalidates every
+// query that folds in the git-tracked set, which the import-edges query does. An
+// empty token represents no git repository. This makes git state a first-class
+// memo input so a terminal `git add`/commit — which mutates the index but touches
+// no .nix file — can no longer serve a cached, stale GitTracked edge.
+func SetGitState(engine *memo.Engine, token string) {
+	engine.SetInput(GitStateKey(), token)
+}
+
 // SetFileInput stores the current file input for fileID. fileID must be a
 // composite produced by FileID(path, hash).
 func SetFileInput(engine *memo.Engine, fileID string, input FileInput) {
@@ -88,6 +104,11 @@ func WorkspaceKey() memo.Key {
 // FlakeLockKey returns the current flake.lock input key.
 func FlakeLockKey() memo.Key {
 	return memo.Key{Kind: QueryFlakeLock, ID: flakeLockInputID}
+}
+
+// GitStateKey returns the current git-state input key.
+func GitStateKey() memo.Key {
+	return memo.Key{Kind: QueryGitState, ID: gitStateInputID}
 }
 
 // FlakeModelKey returns the flake input-model query key for fileID.
@@ -232,6 +253,14 @@ func importEdges(ctx context.Context, q *memo.Context, key memo.Key) (any, error
 	}
 	workspace, err := getWorkspace(ctx, q)
 	if err != nil {
+		return nil, err
+	}
+	// The git-tracked set folded into each edge derives from the workspace
+	// snapshot, which only reflects git state as of the last discovery. Reading
+	// the git-state input here records it as a dependency, so a terminal `git add`
+	// (which bumps the token via the server's index stat) invalidates these cached
+	// edges even when neither the file content nor the workspace value changed.
+	if _, err := getGitState(ctx, q); err != nil {
 		return nil, err
 	}
 	return importedges.Analyze(input.Path, tree, static.TrackedFiles(workspace))
@@ -383,6 +412,21 @@ func getFlakeLock(ctx context.Context, q *memo.Context) ([]byte, error) {
 		return nil, fmt.Errorf("facts: FlakeLock returned %T", value)
 	}
 	return content, nil
+}
+
+func getGitState(ctx context.Context, q *memo.Context) (string, error) {
+	value, err := q.Get(ctx, GitStateKey())
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	token, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("facts: GitState returned %T", value)
+	}
+	return token, nil
 }
 
 func getImportEdges(ctx context.Context, q *memo.Context, fileID string) ([]importedges.Edge, error) {

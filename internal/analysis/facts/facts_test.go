@@ -3,6 +3,7 @@ package facts
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -295,6 +296,96 @@ func TestFlakeLockInvalidationChangesDiagnostics(t *testing.T) {
 	}
 }
 
+// TestImportEdgesInvalidatedByGitState verifies the stale-untracked-warning fix at
+// the memo layer: import-edges records the git-state input as a dependency, a token
+// bump alone forces a recompute (previously the cached GitTracked:false edge was
+// served), and a terminal `git add` followed by a re-discovery + token bump flips
+// GitTracked to true without any file-content change.
+func TestImportEdgesInvalidatedByGitState(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "flake.nix"), "{}")
+	source := writeFile(t, filepath.Join(root, "importer.nix"), "import ./target.nix")
+	writeFile(t, filepath.Join(root, "target.nix"), "{}")
+	content := []byte("import ./target.nix")
+	id := FileID(normalize(t, source), vfs.ContentHash(content))
+
+	runGitFixture(t, root, "init")
+	runGitFixture(t, root, "add", "flake.nix", "importer.nix")
+
+	discover := func() project.Workspace {
+		ws, err := project.Discover(root)
+		if err != nil {
+			t.Fatalf("Discover error = %v", err)
+		}
+		return ws
+	}
+
+	SetWorkspace(engine, discover())
+	SetFileInput(engine, id, FileInput{Path: normalize(t, source), Content: content})
+	SetGitState(engine, "token-1")
+
+	edges, err := ImportEdges(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("ImportEdges error = %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d (%+v), want 1", len(edges), edges)
+	}
+	if edges[0].GitTracked {
+		t.Fatalf("target reported git-tracked before git add")
+	}
+
+	deps := keySet(engine.Dependencies(ImportEdgesKey(id)))
+	if !deps[GitStateKey()] {
+		t.Fatalf("ImportEdges did not depend on GitState: %v", deps)
+	}
+
+	before := engine.Stats().Recomputes[ImportEdgesKey(id)]
+
+	// A git-state token bump alone invalidates the cached edges (the crux of the
+	// fix): the query recomputes though file content and the workspace value are
+	// unchanged. The tracked set still derives from the stale workspace, so
+	// GitTracked stays false until a re-discovery supplies fresh data.
+	SetGitState(engine, "token-1b")
+	if _, err := ImportEdges(context.Background(), engine, id); err != nil {
+		t.Fatalf("ImportEdges after token bump error = %v", err)
+	}
+	if got := engine.Stats().Recomputes[ImportEdgesKey(id)]; got != before+1 {
+		t.Fatalf("token bump did not recompute ImportEdges (recomputes %d -> %d)", before, got)
+	}
+
+	// Terminal git add now tracks target.nix. Re-discover the workspace (as the
+	// server does on the .git/index event) and bump the token: GitTracked flips to
+	// true with no file-content change.
+	runGitFixture(t, root, "add", "target.nix")
+	SetWorkspace(engine, discover())
+	SetGitState(engine, "token-2")
+
+	edges2, err := ImportEdges(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("ImportEdges after git add error = %v", err)
+	}
+	if !edges2[0].GitTracked {
+		t.Fatalf("target still untracked after git add + token bump: %+v", edges2[0])
+	}
+}
+
+func runGitFixture(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v error = %v\n%s", args, err, out)
+	}
+}
+
 func containsCode(diags []syntax.Diagnostic, code string) bool {
 	for _, d := range diags {
 		if d.Code == code {
@@ -307,6 +398,10 @@ func containsCode(diags []syntax.Diagnostic, code string) bool {
 func NewEngineForTest() *memo.Engine {
 	engine := memo.New()
 	Register(engine)
+	// Seed the git-state input the import-edges query always reads; production
+	// NewHandler seeds it the same way. Tests that exercise git tracking override
+	// it with SetGitState.
+	SetGitState(engine, "")
 	return engine
 }
 

@@ -123,6 +123,7 @@ func NewHandler() *Handler {
 	facts.Register(engine)
 	facts.SetWorkspace(engine, project.Workspace{})
 	facts.SetFlakeLock(engine, nil)
+	facts.SetGitState(engine, "")
 
 	handler := &Handler{
 		vfs:            vfs.New(),
@@ -333,6 +334,7 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 			facts.SetWorkspace(h.memo, workspace)
 			snapshot := h.vfs.Snapshot()
 			h.refreshFlakeLock(snapshot)
+			h.refreshGitState()
 			total := len(workspace.Files)
 			lastPct := -1
 			for i, file := range workspace.Files {
@@ -502,6 +504,11 @@ func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
 	// A flake.lock change drives no per-file recompute of its own (it is JSON, not
 	// Nix); it only refreshes the lock input and the root flake.nix diagnostics.
 	lockChanged := false
+	// A .git/index change (a terminal git add/commit, a branch switch) mutates the
+	// git-tracked set with no .nix write, so it too drives no per-file recompute of
+	// its own; it only forces a re-discovery + git-state refresh that clears stale
+	// untracked-import warnings on the open files.
+	gitIndexChanged := false
 	for _, change := range decoded.Changes {
 		path, err := vfs.URIToPath(change.URI)
 		if err != nil {
@@ -509,7 +516,18 @@ func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
 		}
 		isNix := filepath.Ext(path) == ".nix"
 		isLock := filepath.Base(path) == "flake.lock"
-		if !isNix && !isLock {
+		// The client watches "**/.git/index" specifically (VS Code's default
+		// files.watcherExclude does not exclude it — that exclusion is load-bearing
+		// on the extension side). Match by the index file under a .git directory
+		// rather than a bare basename so an unrelated file named "index" is ignored.
+		isGitIndex := filepath.Base(path) == "index" && filepath.Base(filepath.Dir(path)) == ".git"
+		if !isNix && !isLock && !isGitIndex {
+			continue
+		}
+		if isGitIndex {
+			// Never treat .git/index as a workspace .nix file; it only signals a
+			// git-tracked-set change routed through the re-discovery below.
+			gitIndexChanged = true
 			continue
 		}
 		// An open buffer overrides disk; its diagnostics are the editor's, not the
@@ -527,7 +545,7 @@ func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
 			deleted: change.Type == fileChangeTypeDeleted,
 		})
 	}
-	if len(changes) == 0 && !lockChanged {
+	if len(changes) == 0 && !lockChanged && !gitIndexChanged {
 		return nil
 	}
 
@@ -573,6 +591,11 @@ func (h *Handler) refreshWatchedFiles(ctx context.Context, root string, changes 
 	// Refresh the flake.lock input so the root flake.nix diagnostics reflect a
 	// lock change (or any re-discovery) below.
 	h.refreshFlakeLock(snapshot)
+
+	// Refresh the git-state token so a .git/index change (a terminal git add, the
+	// gitAdd command, or any re-discovery) invalidates the cached import edges and
+	// clears stale untracked-import warnings.
+	h.refreshGitState()
 
 	changed := make(map[string]bool, len(changes))
 	for _, change := range changes {
@@ -620,6 +643,35 @@ func (h *Handler) refreshFlakeLock(snapshot *vfs.Snapshot) {
 		content = file.Content
 	}
 	facts.SetFlakeLock(h.memo, content)
+}
+
+// refreshGitState stats the workspace root's git index and stores the resulting
+// version token as the memo git-state input, so a token change invalidates the
+// cached import edges (and thus untracked-import warnings). It is cheap enough — a
+// single stat — to call on every diagnostics recompute, which is what lets a
+// terminal `git add` reach the coalescer path without a .nix file change.
+func (h *Handler) refreshGitState() {
+	h.mu.RLock()
+	root := h.workspace.Root
+	h.mu.RUnlock()
+	facts.SetGitState(h.memo, gitIndexToken(root))
+}
+
+// gitIndexToken returns a cheap version token for the git index under root: the
+// index modification time and size joined, or the empty token when the index is
+// absent. It is deliberately a stat rather than a git invocation so it can run on
+// every recompute. A worktree checkout keeps its index outside `root/.git/index`
+// (`.git` is a file pointing at the real gitdir), which discovery does not resolve
+// today either; such a checkout yields the empty token rather than a stale one.
+func gitIndexToken(root string) string {
+	if root == "" {
+		return ""
+	}
+	info, err := os.Stat(filepath.Join(root, ".git", "index"))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d-%d", info.ModTime().UnixNano(), info.Size())
 }
 
 // openFiles returns the open buffers in snapshot as watchedFileChange values
@@ -722,6 +774,11 @@ func (h *Handler) scheduleFileDiagnostics(uri string, path string, debounce bool
 // time the recompute was requested) and computes and publishes diagnostics for
 // the URI.
 func (h *Handler) runFileDiagnostics(ctx context.Context, uri, path string, debounce bool) {
+	// Refresh the git-state token before recomputing so a terminal `git add` that
+	// only touched the index (no .nix change, so no re-discovery) still invalidates
+	// this file's cached import edges and its stale untracked-import warning. The
+	// token is a single stat, cheap enough to run on every coalesced recompute.
+	h.refreshGitState()
 	generation := h.nextGeneration()
 	snapshot := h.vfs.Snapshot()
 	_ = h.computeFileDiagnostics(ctx, snapshot, uri, path, generation, debounce)
