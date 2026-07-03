@@ -1,6 +1,6 @@
 # PR/push gate: `nix flake check` builds the server with the full go test
 # suite in the check phase — one command, same derivation the release ships.
-# Runs on ubuntu-latest and macos-14 so the darwin build (cgo + vendored
+# Runs on ubuntu-latest and macos-15 so the darwin build (cgo + vendored
 # tree-sitter) is proven on every push/PR, not first at release time.
 # Every nix job has a timeout so a hung installer/build can never require a
 # manual cancel; the Nix store is cached on Linux runners only (measured to
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     # actions: write lets the cache step purge stale cache entries.
