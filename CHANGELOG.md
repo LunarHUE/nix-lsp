@@ -70,6 +70,9 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-03
 
+- **Real Nix logo file icons**: the language icon now uses the NixOS
+  lambda-snowflake (CC-BY-4.0, NixOS Foundation) — near-black for light
+  themes, brand light blue for dark themes — replacing the placeholder mark.
 - **Option type checks**: a documented option bound to a literal of the wrong
   kind warns, e.g. `type mismatch: networking.firewall.enable expects boolean,
   got string` (code `option-type-mismatch`). Only unambiguous literals are
