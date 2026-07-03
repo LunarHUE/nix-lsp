@@ -126,6 +126,13 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Fixed — 2026-07-03
 
+- **Embedded bash now covers the full shell-attr family**: `shellInit`,
+  `interactiveShellInit` and friends, `extraCommands`, and all stdenv builder
+  phases (`buildPhase`, `postInstall`, ...) highlight as bash — 41 trigger
+  names total. Two grammar fixes rode along: a trigger attr as the first
+  binding of an attrset no longer desyncs the host's brace matching, and Nix
+  `${...}` interpolation inside shell double-quoted strings scopes as Nix
+  instead of shell parameter expansion.
 - **Frozen diagnostics requiring a restart**: bursts of edits could fill the
   background task queue, and the blocking submit then wedged the LSP read
   loop itself — freezing every feature with stale errors stuck on screen.

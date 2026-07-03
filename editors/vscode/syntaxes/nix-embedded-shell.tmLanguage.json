@@ -16,16 +16,13 @@
   ],
   "repository": {
     "attr-shell": {
-      "comment": "Trigger B: a binding whose last attrpath segment is a well-known script-carrying name, valued by an indented string. This rule consumes the attr name and `=`, so the host grammar never opens its binding region — therefore the end must also consume the trailing `;` (scoped exactly as the host would: punctuation.terminator.bind.nix) so the host resumes at a clean binding boundary instead of seeing a stray `;` (which it scopes invalid.illegal). Captures mirror the host's scopes so the consumed prefix renders identically.",
-      "begin": "\\b(script|preStart|postStart|preStop|postStop|shellHook)\\b\\s*(=)\\s*('')",
+      "comment": "Trigger B: a binding whose last attrpath segment is a well-known script-carrying name, valued by an indented string. Alternation is a single alphabetical group covering: systemd/service hooks (script, preStart/postStart, preStop/postStop, extraCommands, extraStopCommands, reload), shell init options (shellHook, shellInit, interactiveShellInit, loginShellInit, promptInit, initExtra, bashrcExtra, profileExtra, envExtra, logoutExtra), and stdenv builder phases (*Phase plus the pre*/post* family). Known approximation: programs.fish.* init options get bash coloring — the trigger sees only the attr name; acceptable. `text` and systemd Exec* are deliberately absent (arbitrary content / command lines, not scripts). CRITICAL SHAPE: the attr name lives in a LOOKBEHIND, so the match begins at the `=`. The host must tokenize the name itself: its attrset-or-function rule disambiguates attrset-vs-function via a zero-width lookahead at the first binding's name and then pushes the region that owns the closing `}` — if this rule consumed the name (an L: injection wins that tie), a trigger attr as FIRST binding of a multi-line attrset would desync the host and render the closing `}` invalid.illegal. Starting at `=` lets the host's disambiguation and #attribute-name run first (scoping the name as entity.other.attribute-name.multipart.nix), then this rule takes over. Oniguruma accepts variable-length alternation of fixed strings in lookbehind but NOT a nested (?<!) — hence the (?:^|[^\\w'-]) prefix guard for exact-segment semantics on Nix identifiers (which may contain ' and -): `foo.shellInit` fires; `shellInitFor`, `notAShellInit`, `my-shellInit`, `descript` do not (the \\s*= after the lookbehind implicitly rejects names extended to the right). This rule still consumes the `=`, so the host never opens its binding region — therefore the end must also consume the trailing `;` (scoped exactly as the host would: punctuation.terminator.bind.nix) so the host resumes at a clean binding boundary instead of seeing a stray `;` (which it scopes invalid.illegal).",
+      "begin": "(?<=(?:^|[^\\w'-])(?:bashrcExtra|buildPhase|checkPhase|configurePhase|distPhase|envExtra|extraCommands|extraStopCommands|fixupPhase|initExtra|installCheckPhase|installPhase|interactiveShellInit|loginShellInit|logoutExtra|patchPhase|postBuild|postCheck|postConfigure|postDist|postFixup|postInstall|postPatch|postStart|postStop|preBuild|preCheck|preConfigure|preDist|preFixup|preInstall|prePatch|preStart|preStop|profileExtra|promptInit|reload|script|shellHook|shellInit|unpackPhase))\\s*(=)\\s*('')",
       "beginCaptures": {
         "1": {
-          "name": "entity.other.attribute-name.multipart.nix"
-        },
-        "2": {
           "name": "keyword.operator.bind.nix"
         },
-        "3": {
+        "2": {
           "name": "string.quoted.other.nix punctuation.definition.string.other.start.nix"
         }
       },

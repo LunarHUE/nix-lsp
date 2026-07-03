@@ -64,6 +64,16 @@
           "meta.embedded.block.shellscript": "shellscript",
           "meta.embedded.expression.nix": "nix"
         }
+      },
+      {
+        "scopeName": "source.nix.embedded-shell-interp",
+        "path": "./syntaxes/nix-embedded-shell-interp.tmLanguage.json",
+        "injectTo": [
+          "source.nix"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.expression.nix": "nix"
+        }
       }
     ],
     "configuration": {

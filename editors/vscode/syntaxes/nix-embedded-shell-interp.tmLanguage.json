@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Nix Interpolation inside Embedded Shell",
+  "scopeName": "source.nix.embedded-shell-interp",
+  "injectionSelector": "L:meta.embedded.block.shellscript",
+  "patterns": [
+    {
+      "include": "#nix-string-escape"
+    },
+    {
+      "include": "#nix-interpolation"
+    }
+  ],
+  "repository": {
+    "nix-string-escape": {
+      "comment": "Nix indented-string escapes (''$ , ''' , ''\\.) inside embedded shell. Injected with L: into every context the shell grammar pushes (double-quoted strings, tests, subshells, ...), because the companion grammar's region-level includes are only consulted while no shell rule is open. Ordered before nix-interpolation and matching one character earlier than the interpolation could, so ''${ is a Nix escape, never an interpolation start.",
+      "match": "''(\\$|'|\\\\.)",
+      "name": "constant.character.escape.nix"
+    },
+    "nix-interpolation": {
+      "comment": "Nix antiquotation ${ ... }: inside a Nix indented string this is ALWAYS Nix (shell must write ''${...} for a literal), so it must win over the shell grammar's own ${...} parameter-expansion rules — L: injection priority breaks the tie at the $ position in this grammar's favor.",
+      "name": "meta.embedded.expression.nix",
+      "begin": "\\$\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.nix"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.nix"
+        }
+      },
+      "patterns": [
+        {
+          "include": "source.nix"
+        }
+      ]
+    }
+  }
+}
