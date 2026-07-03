@@ -31,11 +31,21 @@ type File struct {
 	Generation uint64
 	// Overlay reports whether Content came from an open editor buffer.
 	Overlay bool
+	// Version is the LSP document version of the open buffer this File was read
+	// from. It is meaningful only when Overlay is true; for disk reads it is
+	// NoVersion (there is no editor version for on-disk content).
+	Version int32
 }
+
+// NoVersion marks a File that has no LSP document version (a disk read). It is
+// deliberately not a valid LSP version so it can never collide with a real
+// version 0.
+const NoVersion int32 = -1
 
 type overlayFile struct {
 	content []byte
 	hash    string
+	version int32
 }
 
 // Store owns the current mutable set of open editor buffers.
@@ -61,14 +71,33 @@ func (s *Store) Generation() uint64 {
 	return s.generation
 }
 
-// OpenBuffer opens or replaces an in-memory editor buffer for path.
-func (s *Store) OpenBuffer(path string, content []byte) (File, error) {
-	return s.setBuffer(path, content, true)
+// OpenBuffer opens or replaces an in-memory editor buffer for path at the given
+// LSP document version.
+func (s *Store) OpenBuffer(path string, content []byte, version int32) (File, error) {
+	return s.setBuffer(path, content, version, true)
 }
 
-// UpdateBuffer replaces the contents of an already-open editor buffer.
-func (s *Store) UpdateBuffer(path string, content []byte) (File, error) {
-	return s.setBuffer(path, content, false)
+// UpdateBuffer replaces the contents of an already-open editor buffer, recording
+// the new LSP document version.
+func (s *Store) UpdateBuffer(path string, content []byte, version int32) (File, error) {
+	return s.setBuffer(path, content, version, false)
+}
+
+// Version returns the LSP document version of the open buffer for path, if one
+// is open. The second result is false when no buffer is open for path (a disk
+// file has no version).
+func (s *Store) Version(path string) (int32, bool) {
+	normalized, err := NormalizePath(path)
+	if err != nil {
+		return NoVersion, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	overlay, ok := s.overlays[normalized]
+	if !ok {
+		return NoVersion, false
+	}
+	return overlay.version, true
 }
 
 // CloseBuffer removes an in-memory editor buffer. Later snapshots will fall
@@ -99,12 +128,13 @@ func (s *Store) Snapshot() *Snapshot {
 		overlays[path] = overlayFile{
 			content: cloneBytes(overlay.content),
 			hash:    overlay.hash,
+			version: overlay.version,
 		}
 	}
 	return &Snapshot{generation: s.generation, overlays: overlays}
 }
 
-func (s *Store) setBuffer(path string, content []byte, allowCreate bool) (File, error) {
+func (s *Store) setBuffer(path string, content []byte, version int32, allowCreate bool) (File, error) {
 	normalized, err := NormalizePath(path)
 	if err != nil {
 		return File{}, err
@@ -121,7 +151,7 @@ func (s *Store) setBuffer(path string, content []byte, allowCreate bool) (File, 
 		}
 	}
 	s.generation++
-	s.overlays[normalized] = overlayFile{content: copied, hash: hash}
+	s.overlays[normalized] = overlayFile{content: copied, hash: hash, version: version}
 
 	return File{
 		Path:       normalized,
@@ -129,6 +159,7 @@ func (s *Store) setBuffer(path string, content []byte, allowCreate bool) (File, 
 		Hash:       hash,
 		Generation: s.generation,
 		Overlay:    true,
+		Version:    version,
 	}, nil
 }
 
@@ -190,6 +221,7 @@ func (s *Snapshot) ReadFile(path string) (File, error) {
 			Hash:       overlay.hash,
 			Generation: s.generation,
 			Overlay:    true,
+			Version:    overlay.version,
 		}, nil
 	}
 
@@ -203,7 +235,26 @@ func (s *Snapshot) ReadFile(path string) (File, error) {
 		Hash:       ContentHash(content),
 		Generation: s.generation,
 		Overlay:    false,
+		Version:    NoVersion,
 	}, nil
+}
+
+// Version returns the LSP document version of the open buffer for path as
+// captured by this snapshot. The second result is false when the snapshot has
+// no open buffer for path.
+func (s *Snapshot) Version(path string) (int32, bool) {
+	if s == nil {
+		return NoVersion, false
+	}
+	normalized, err := NormalizePath(path)
+	if err != nil {
+		return NoVersion, false
+	}
+	overlay, ok := s.overlays[normalized]
+	if !ok {
+		return NoVersion, false
+	}
+	return overlay.version, true
 }
 
 // ContentHash returns the hex-encoded SHA-256 hash of content.

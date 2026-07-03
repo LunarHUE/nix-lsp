@@ -20,6 +20,12 @@ type diagnosticUpdate struct {
 	Diagnostics []syntax.Diagnostic
 	Generation  uint64
 	Debounce    bool
+	// Version is the LSP document version of the overlay snapshot these
+	// diagnostics were computed from. It is meaningful only when Versioned is
+	// true; unversioned (disk-file) updates leave it at its zero value and pass
+	// the version backstop unconditionally.
+	Version   int32
+	Versioned bool
 }
 
 type diagnosticsPublisher struct {
@@ -31,6 +37,11 @@ type diagnosticsPublisher struct {
 
 	mu       sync.RWMutex
 	notifier lsp.Notifier
+	// currentVersion reports the CURRENT LSP document version for a URI (ok=false
+	// for an unversioned URI). Injected by the handler so the publisher can drop
+	// diagnostics that were computed from a since-superseded buffer, without
+	// coupling to the Handler struct.
+	currentVersion func(uri string) (int32, bool)
 }
 
 func newDiagnosticsPublisher() *diagnosticsPublisher {
@@ -49,6 +60,14 @@ func (p *diagnosticsPublisher) SetNotifier(notifier lsp.Notifier) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.notifier = notifier
+}
+
+// SetVersionLookup injects the current-document-version accessor used as the
+// version backstop at publish time.
+func (p *diagnosticsPublisher) SetVersionLookup(lookup func(uri string) (int32, bool)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.currentVersion = lookup
 }
 
 func (p *diagnosticsPublisher) Publish(update diagnosticUpdate) {
@@ -155,13 +174,31 @@ func (p *diagnosticsPublisher) drainPending(pending map[string]diagnosticUpdate,
 func (p *diagnosticsPublisher) send(update diagnosticUpdate) {
 	p.mu.RLock()
 	notifier := p.notifier
+	currentVersion := p.currentVersion
 	p.mu.RUnlock()
 	if notifier == nil {
 		return
 	}
 
-	_ = notifier.Notify(context.Background(), "textDocument/publishDiagnostics", publishDiagnosticsParams{
+	// Version backstop (independent of the generation layer): if these
+	// diagnostics were computed from an overlay snapshot the live document has
+	// since advanced past, drop them. A client would reject the stale publish
+	// anyway, and republishing older content over a newer buffer would resurrect
+	// already-fixed diagnostics. Unversioned (disk-file) updates skip this.
+	if update.Versioned && currentVersion != nil {
+		if current, ok := currentVersion(update.URI); ok && current > update.Version {
+			return
+		}
+	}
+
+	params := publishDiagnosticsParams{
 		URI:         update.URI,
 		Diagnostics: toProtocolDiagnostics(update.Diagnostics),
-	})
+	}
+	if update.Versioned {
+		version := int(update.Version)
+		params.Version = &version
+	}
+
+	_ = notifier.Notify(context.Background(), lsp.MethodTextDocumentPublishDiagnostics, params)
 }

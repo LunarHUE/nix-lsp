@@ -13,6 +13,46 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/vfs"
 )
 
+// TestHandlerDidOpenVersionZeroRoundTrips proves a legitimate version 0 survives
+// the didOpen decode into the VFS, rather than being silently dropped (the
+// omitempty hazard the version stamping fixed).
+func TestHandlerDidOpenVersionZeroRoundTrips(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	if _, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidOpen, mustJSON(t, map[string]any{
+		"textDocument": map[string]any{"uri": uri, "version": 0, "text": "{ }\n"},
+	})); err != nil {
+		t.Fatalf("didOpen error = %v", err)
+	}
+
+	if v, ok := handler.vfs.Version(path); !ok || v != 0 {
+		t.Fatalf("vfs.Version() = (%d, %v), want (0, true)", v, ok)
+	}
+}
+
+// TestHandlerDidChangeStoresVersion confirms didChange carries the LSP document
+// version through to the VFS.
+func TestHandlerDidChangeStoresVersion(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	path := filepath.Join(t.TempDir(), "test.nix")
+	uri := mustURI(t, path)
+
+	openDocument(t, handler, uri, "{ }\n")
+	if _, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
+		"textDocument":   map[string]any{"uri": uri, "version": 4},
+		"contentChanges": []map[string]any{{"text": "{ a = 1; }\n"}},
+	})); err != nil {
+		t.Fatalf("didChange error = %v", err)
+	}
+	if v, ok := handler.vfs.Version(path); !ok || v != 4 {
+		t.Fatalf("vfs.Version() after didChange = (%d, %v), want (4, true)", v, ok)
+	}
+}
+
 func TestHandlerDidOpenStoresOverlayAndDiagnostics(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()

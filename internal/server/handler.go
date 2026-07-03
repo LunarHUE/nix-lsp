@@ -140,6 +140,11 @@ func NewHandler() *Handler {
 		diagPublished:  make(chan struct{}),
 	}
 	handler.optionsCtx, handler.optionsCancel = context.WithCancel(context.Background())
+	// Give the publisher a way to ask for a URI's CURRENT document version at
+	// publish time, so it can drop diagnostics computed from a superseded buffer.
+	// Injected as a func (like the notifier) rather than coupling the publisher to
+	// the Handler.
+	handler.publisher.SetVersionLookup(handler.currentDocumentVersion)
 	handler.diag = newDiagScheduler(handler.enqueueBackground, handler.runFileDiagnostics)
 	handler.tasks.Start(context.Background(), 2)
 	return handler
@@ -443,7 +448,7 @@ func (h *Handler) didOpen(params json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	if _, err := h.vfs.OpenBuffer(path, []byte(decoded.TextDocument.Text)); err != nil {
+	if _, err := h.vfs.OpenBuffer(path, []byte(decoded.TextDocument.Text), int32(decoded.TextDocument.Version)); err != nil {
 		return err
 	}
 	h.scheduleFileDiagnostics(decoded.TextDocument.URI, path, true)
@@ -464,8 +469,9 @@ func (h *Handler) didChange(params json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	if _, err := h.vfs.UpdateBuffer(path, []byte(text)); err != nil {
-		if _, openErr := h.vfs.OpenBuffer(path, []byte(text)); openErr != nil {
+	version := int32(decoded.TextDocument.Version)
+	if _, err := h.vfs.UpdateBuffer(path, []byte(text), version); err != nil {
+		if _, openErr := h.vfs.OpenBuffer(path, []byte(text), version); openErr != nil {
 			return openErr
 		}
 	}
@@ -880,13 +886,32 @@ func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snap
 	h.signalDiagPublished()
 	h.mu.Unlock()
 
+	// Record the document version this compute actually read (overlay files
+	// only; disk files have none). The publisher uses it as a version backstop:
+	// if the live document has advanced past this version by publish time, the
+	// update is stale and gets dropped — a correctness layer independent of the
+	// generation ordering above.
 	h.publisher.Publish(diagnosticUpdate{
 		URI:         uri,
 		Diagnostics: diagnostics,
 		Generation:  generation,
 		Debounce:    debounce,
+		Version:     file.Version,
+		Versioned:   file.Overlay,
 	})
 	return nil
+}
+
+// currentDocumentVersion reports the live LSP document version for uri, if a
+// buffer is open for it. It is the publisher's version backstop: the second
+// result is false for a URI with no open buffer (an unversioned/disk publish),
+// which the publisher passes through unchanged.
+func (h *Handler) currentDocumentVersion(uri string) (int32, bool) {
+	path, err := vfs.URIToPath(uri)
+	if err != nil {
+		return vfs.NoVersion, false
+	}
+	return h.vfs.Version(path)
 }
 
 func (h *Handler) nextGeneration() uint64 {
@@ -918,13 +943,20 @@ func cloneDiagnostics(diagnostics []syntax.Diagnostic) []syntax.Diagnostic {
 type textDocumentItem struct {
 	URI        string `json:"uri"`
 	LanguageID string `json:"languageId,omitempty"`
-	Version    int    `json:"version,omitempty"`
-	Text       string `json:"text"`
+	// Version has no omitempty: the LSP spec makes it required, and omitempty
+	// would silently drop a legitimate version 0 if this struct were ever
+	// re-encoded. (Asymmetry note: the outbound publishDiagnosticsParams.Version
+	// IS a pointer with omitempty, because there "absent" must be distinguishable
+	// from 0 on the wire.)
+	Version int    `json:"version"`
+	Text    string `json:"text"`
 }
 
 type versionedTextDocumentIdentifier struct {
-	URI     string `json:"uri"`
-	Version int    `json:"version,omitempty"`
+	URI string `json:"uri"`
+	// Version has no omitempty: required by the LSP spec, and dropping a zero on
+	// re-encode would corrupt the version backstop. See textDocumentItem.Version.
+	Version int `json:"version"`
 }
 
 type textDocumentIdentifier struct {
@@ -966,7 +998,13 @@ type executeCommandParams struct {
 }
 
 type publishDiagnosticsParams struct {
-	URI         string               `json:"uri"`
+	URI string `json:"uri"`
+	// Version is a pointer with omitempty so "no version" (a disk-file publish)
+	// is encoded as an absent field, distinct from a real version 0. This is the
+	// deliberate asymmetry with the inbound decode structs (textDocumentItem /
+	// versionedTextDocumentIdentifier), whose Version is a plain required int:
+	// there absent-vs-0 does not matter, here it does.
+	Version     *int                 `json:"version,omitempty"`
 	Diagnostics []protocolDiagnostic `json:"diagnostics"`
 }
 
