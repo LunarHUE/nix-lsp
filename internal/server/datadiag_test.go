@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -211,6 +212,52 @@ func TestDatasetUserRealModuleNoDiagnostics(t *testing.T) {
 	}
 }
 
+func TestDatasetNoOptionDiagnosticsOnParseError(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	initWithDatasets(t, handler, t.TempDir(), optionsFixturePath(t), "")
+	uri := mustURI(t, "/tmp/mod.nix")
+	// A buffer that is BOTH syntactically broken (the nested `y = 1` binding misses
+	// its ';') AND carries an unknown option (networking.firewal). On a broken tree
+	// tree-sitter's error recovery can reparent a name and compose a wrong option
+	// path, so the dataset option/type diagnostics must be suppressed entirely until
+	// the parse recovers — mirroring gopls suppressing type diagnostics in
+	// unparsable files.
+	src := "{ config, ... }:\n{\n  networking.firewal.enable = true;\n  x = {\n    y = 1\n  };\n}\n"
+	before := publishedGen(handler, uri)
+	openDocument(t, handler, uri, src)
+	waitForDiagnosticsGen(t, handler, uri, before+1)
+	if _, ok := diagnosticWithCode(handler.Diagnostics(uri), datadiag.CodeUnknownOption); ok {
+		t.Fatalf("unknown-option published on a broken buffer: %+v", handler.Diagnostics(uri))
+	}
+	if _, ok := diagnosticWithCode(handler.Diagnostics(uri), datadiag.CodeOptionTypeMismatch); ok {
+		t.Fatalf("option-type-mismatch published on a broken buffer: %+v", handler.Diagnostics(uri))
+	}
+}
+
+func TestDatasetNoCodeActionOnParseError(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	initWithDatasets(t, handler, t.TempDir(), optionsFixturePath(t), "")
+	uri := mustURI(t, "/tmp/mod.nix")
+	// Same broken-plus-unknown-option buffer as above: with dataset diagnostics
+	// suppressed, no quick-fix may be offered for the (unpublished) warning either.
+	src := "{ config, ... }:\n{\n  networking.firewal.enable = true;\n  x = {\n    y = 1\n  };\n}\n"
+	before := publishedGen(handler, uri)
+	openDocument(t, handler, uri, src)
+	waitForDiagnosticsGen(t, handler, uri, before+1)
+
+	// Request over the whole document, so the absence is not an overlap artifact.
+	actions := requestCodeActions(t, handler, uri, 0, 0, 10, 0, nil)
+	for _, a := range actions {
+		if strings.HasPrefix(a.Title, "Change to '") {
+			t.Fatalf("dataset quick-fix offered on a broken buffer: %q", a.Title)
+		}
+	}
+}
+
 func TestDatasetSyntaxErrorOptionGuidancePublished(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()
@@ -219,7 +266,10 @@ func TestDatasetSyntaxErrorOptionGuidancePublished(t *testing.T) {
 	uri := mustURI(t, "/tmp/mod.nix")
 	// The misclassification report's exact buffer in its module wrapper: the wg0
 	// binding misses its `;`, and the published message must both classify the
-	// missing semicolon and carry the option guidance for the enclosing path.
+	// missing semicolon and carry the option guidance for the enclosing path. This
+	// is a broken buffer (tree.Root().HasError() is true), so it also guards that
+	// the parse-error gate on dataset diagnostics does NOT suppress syntax-error
+	// enrichment — that path stays unconditional.
 	src := "{ config, ... }:\n{\n  networking.wireguard.interfaces = {\n    wg0 = {\n      \n    }\n  };\n}\n"
 	openDocument(t, handler, uri, src)
 

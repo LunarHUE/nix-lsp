@@ -31,6 +31,14 @@ func (h *Handler) datasetDiagnostics(ctx context.Context, fileID string) []synta
 	if err != nil || tree == nil {
 		return nil
 	}
+	// Suppress dataset type diagnostics on an unparsable buffer: error recovery can
+	// reparent nodes and compose a wrong option path, yielding spurious warnings
+	// (gopls suppresses type diagnostics in unparsable files for the same reason).
+	// Revisit when a repair pass exists (adoption plan #5) — then run dataset
+	// diagnostics on the repaired tree and suppress only when repair failed.
+	if tree.Root().HasError() {
+		return nil
+	}
 
 	var out []syntax.Diagnostic
 	out = appendDataset(out, datadiag.OptionDiagnostics(tree, optionsIndex))
@@ -81,6 +89,11 @@ func (h *Handler) datasetCodeActions(ctx context.Context, fileID, uri string, re
 	}
 	tree, err := facts.ParseTree(ctx, h.memo, fileID)
 	if err != nil || tree == nil {
+		return nil
+	}
+	// Mirror datasetDiagnostics: no quick-fixes for warnings that a broken tree
+	// suppresses (see the gate there; revisit with adoption plan #5's repair pass).
+	if tree.Root().HasError() {
 		return nil
 	}
 
