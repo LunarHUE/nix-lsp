@@ -6,13 +6,15 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    flake-utils,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -57,24 +59,28 @@
         # lives under) an allowed root, OR when it is an ancestor of one (e.g.
         # "editors" must be kept so the walk can descend to "editors/vscode").
         # `exclude` re-drops paths under an allowed root (built artifacts).
-        mkAllowlistSrc = { allowed, exclude ? [ ] }:
+        mkAllowlistSrc =
+          {
+            allowed,
+            exclude ? [ ],
+          }:
           let
             lib = nixpkgs.lib;
             root = toString ./.;
           in
           lib.cleanSourceWith {
             src = ./.;
-            filter = path: _type:
+            filter =
+              path: _type:
               let
                 rel = lib.removePrefix (root + "/") (toString path);
-                underAllowed = lib.any
-                  (a: rel == a || lib.hasPrefix (a + "/") rel) allowed;
-                ancestorOfAllowed = lib.any
-                  (a: lib.hasPrefix (rel + "/") a) allowed;
+                underAllowed = lib.any (a: rel == a || lib.hasPrefix (a + "/") rel) allowed;
+                ancestorOfAllowed = lib.any (a: lib.hasPrefix (rel + "/") a) allowed;
               in
               rel == ""
-              || ((underAllowed || ancestorOfAllowed)
-                && !lib.any (e: rel == e || lib.hasPrefix (e + "/") rel) exclude);
+              || (
+                (underAllowed || ancestorOfAllowed) && !lib.any (e: rel == e || lib.hasPrefix (e + "/") rel) exclude
+              );
           };
 
         # The Go server build reads exactly:
@@ -85,7 +91,14 @@
         #   - testdata/        (fixtures the internal/* tests load)
         # No package uses //go:embed, so nothing else at the repo root is read.
         serverSrc = mkAllowlistSrc {
-          allowed = [ "go.mod" "go.sum" "cmd" "internal" "third_party" "testdata" ];
+          allowed = [
+            "go.mod"
+            "go.sum"
+            "cmd"
+            "internal"
+            "third_party"
+            "testdata"
+          ];
         };
 
         # Single source of truth for the build's version so the store-path
@@ -98,7 +111,10 @@
         # so out/ and node_modules are regenerated in the build, not shipped.
         vsixSrc = mkAllowlistSrc {
           allowed = [ "editors/vscode" ];
-          exclude = [ "editors/vscode/node_modules" "editors/vscode/out" ];
+          exclude = [
+            "editors/vscode/node_modules"
+            "editors/vscode/out"
+          ];
         };
 
         # The language server. `subPackages` scopes the build/install to
@@ -118,19 +134,25 @@
           vendorHash = "sha256-cNKRQ5ArES8Ffpq1TB4VV6cvqbPSr32qzzIdQm+mcpE=";
           subPackages = [ "cmd/nixls" ];
           env.CGO_ENABLED = "1";
-          ldflags = [ "-s" "-w" "-X main.version=${version}" ];
+          ldflags = [
+            "-s"
+            "-w"
+            "-X main.version=${version}"
+          ];
           nativeCheckInputs = [ pkgs.git ];
-          preCheck = ''unset subPackages'';
+          preCheck = "unset subPackages";
         };
         # VS Code platform target for this nix system; the vsix package exists
         # only where the mapping does (Windows has no nix — its VSIX is built
         # by a plain Go job in CI).
-        vsceTarget = {
-          "x86_64-linux" = "linux-x64";
-          "aarch64-linux" = "linux-arm64";
-          "x86_64-darwin" = "darwin-x64";
-          "aarch64-darwin" = "darwin-arm64";
-        }.${system} or null;
+        vsceTarget =
+          {
+            "x86_64-linux" = "linux-x64";
+            "aarch64-linux" = "linux-arm64";
+            "x86_64-darwin" = "darwin-x64";
+            "aarch64-darwin" = "darwin-arm64";
+          }
+          .${system} or null;
 
         # Platform-specific VSIX with the nix-built server bundled at bin/nixls.
         vsix = pkgs.buildNpmPackage {
@@ -140,7 +162,10 @@
           npmDepsHash = "sha256-+GNCcK8sNKbtrD2ooOxm0R32hMIXEzi327/tUq4XvKc=";
           npmBuildScript = "compile";
           dontNpmInstall = true;
-          nativeBuildInputs = [ pkgs.nodejs pkgs.vsce ];
+          nativeBuildInputs = [
+            pkgs.nodejs
+            pkgs.vsce
+          ];
           installPhase = ''
             runHook preInstall
             mkdir -p bin $out
@@ -149,15 +174,31 @@
             runHook postInstall
           '';
         };
-      in {
+      in
+      {
+        # `nix fmt` formats Nix files with nixfmt (RFC 166 style). The
+        # `checks.format` gate below enforces this for flake.nix only.
+        formatter = pkgs.nixfmt;
+
         packages = {
           inherit nixls;
           default = nixls;
-        } // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
+        }
+        // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
 
         checks = {
           inherit nixls;
-        } // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
+
+          # Enforce `nix fmt` on flake.nix ONLY. Sourcing the file via a path
+          # literal copies just that one file into the store, so a README (or
+          # any other) edit can never invalidate this check — only a flake.nix
+          # change can, which is exactly what we want to gate.
+          format = pkgs.runCommand "check-format" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+            nixfmt --check ${./flake.nix}
+            touch $out
+          '';
+        }
+        // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
 
         # Lean shell: build essentials only. This is what CI's `nix develop`
         # gates, so a breakage in the heavy `full` extras can never brick the
@@ -165,8 +206,7 @@
         devShells.default = pkgs.mkShell {
           packages = buildPackages ++ bashPackages;
 
-          BASH_COMPLETION_PATH =
-            "${pkgs.bash-completion}/etc/profile.d/bash_completion.sh";
+          BASH_COMPLETION_PATH = "${pkgs.bash-completion}/etc/profile.d/bash_completion.sh";
 
           shellHook = ''
             echo "Nix default devShell ready. node $(node --version 2>/dev/null)"
@@ -179,12 +219,12 @@
         devShells.full = pkgs.mkShell {
           packages = buildPackages ++ bashPackages ++ fullPackages;
 
-          BASH_COMPLETION_PATH =
-            "${pkgs.bash-completion}/etc/profile.d/bash_completion.sh";
+          BASH_COMPLETION_PATH = "${pkgs.bash-completion}/etc/profile.d/bash_completion.sh";
 
           shellHook = ''
             echo "Nix full devShell ready. node $(node --version 2>/dev/null), pnpm $(pnpm --version 2>/dev/null)"
           '';
         };
-      });
+      }
+    );
 }
