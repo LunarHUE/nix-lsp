@@ -111,6 +111,53 @@ finished last, it overwrote the newer. Flaky under `-count=3` from day one.
 The guard must cover every store, and `didClose` must record a generation too
 (else a stale in-flight compute resurrects diagnostics for a closed file).
 
+**Incident: generation guards inverted into a staleness weapon (the second
+restart-only bug).** Guards order publishes correctly only if generation
+order matches input-read order. Background refresh paths (watched-files,
+dataset-load republish, initial indexing) pinned a VFS snapshot up front,
+did arbitrarily long work, then recomputed each open file taking
+`nextGeneration()` *per file, at loop time*. A keystroke landing mid-refresh
+published the corrected buffer under an OLDER generation than the refresh's
+republish of the pinned, stale buffer — so the guard itself made the stale
+content win, permanently: nothing recomputes until the next edit. The user
+saw "I re-added the semicolon and the error stays until I restart." The
+trigger chain was invisible in unit terms: autosave → VS Code's git
+extension touches `.git/index` → the watcher added for the git-staleness fix
+(§2) fires → refresh runs concurrently with the fix-up keystroke. Note the
+compounding: the event source added to FIX one staleness bug became the
+racer that CAUSED this one — every new event source multiplies background
+republish frequency, and every background republish path is a potential
+racer against the edit path.
+
+**How to prevent this entire class (stale-read/fresh-stamp races), not just
+this instance:**
+1. **Single-writer per key.** Exactly one serialized path may compute-and-
+   publish results for a document — the per-URI coalescer. Everything else
+   (refreshes, dataset loads, indexing) *requests* a recompute through it and
+   is forbidden from computing open documents itself. With per-key
+   concurrency of one, publish-ordering races are structurally impossible,
+   and redundant refreshes collapse for free.
+2. **Stamp before read.** When a path must compute directly (non-open files),
+   acquire the ordering token BEFORE reading the input it orders. Token-time
+   ≤ read-time guarantees any newer content gets a newer token; the
+   snapshot-then-loop-then-stamp shape guarantees the opposite under load.
+3. **Snapshots are for single consistent reads, never for iteration.** A
+   pinned snapshot carried across a loop, a queue hop, or any slow work is a
+   time bomb; its age is unbounded. Re-read per item.
+4. **Make the invariant structural, not conventional.** The fix funneled all
+   republishes through one helper that acquires the generation and fresh
+   state internally — no publish-capable signature accepts a caller-supplied
+   (snapshot, generation) pair anymore, so the bug class is inexpressible,
+   not merely avoided. A rule that review must remember will eventually be
+   forgotten; a signature that cannot express the bug will not.
+5. **Or verify at publish instead of ordering by acquisition:** stamp each
+   compute with the document version it read (LSP didChange versions are
+   free) and drop the publish if the current version differs. Self-
+   validating regardless of token discipline — belt to the above suspenders.
+6. **Audit reflexively on every new background writer.** The grep is cheap:
+   anything that calls the publish path — does it read state pinned before
+   its stamp? Run it whenever a refresh hook, watcher, or loader is added.
+
 **Notifications have no reply channel — never let them kill anything.** VS
 Code sent `$/setTrace`; the handler returned method-not-found; the transport
 treated a notification-handler error as fatal; the server died; the client
@@ -384,6 +431,18 @@ diagnostic. Rules that survived contact with a real user:
 - **Beware the stale binary.** Twice, a smoke test "failed" or "passed"
   against a binary that predated the change (`go build ./...` does not update
   `./nixls`; `-o` does). Make the smoke script build the binary itself.
+- **Distinguish "permanently stale" from "still converging" in race repros.**
+  A staleness repro that checks after a fixed sleep will misfire when the
+  server is merely slow: the first repro of the generation race (§3) used
+  giant pathological files to widen the window, and its "REPRODUCED" was
+  partly just multi-minute computes still queued at check time — which also
+  accidentally exposed a real superlinear-parse perf bug. Settle by
+  *quiescence* (no publishes on any URI for N seconds), then assert; and
+  prove the fix in both directions — the regression test red on the old code
+  and green on the new, AND an end-to-end driver stale on the old binary and
+  clean on the new. Related trap: a wait-for-condition test helper with a
+  silent timeout that returns the last state "measures" whatever the timeout
+  is; make helpers fail loudly or return how long they actually waited.
 - Structure loaders so channel selection, TTL math, and parsing are pure
   functions tested without network; keep ALL network behind a main()-only
   enable switch.
@@ -464,7 +523,10 @@ Direct translations of the above for a Terraform LSP:
 - **Everything in §§1–3, 7, 10 transfers verbatim:** pure analysis layers,
   memo with explicit inputs (make `.terraform.lock.hcl`, `.terraform/`
   contents, AND git state inputs from day one), never block the read loop,
-  coalesced recomputes, generation guards, notification error swallowing,
+  coalesced recomputes, generation guards, single-writer-per-document
+  republishing with stamp-before-read (§3 — build it that way from the first
+  background refresh, not after the first restart-only bug),
+  notification error swallowing,
   zero-false-positive budget, real-config regression fixtures, real-binary
   smoke drivers, full-dataset sweeps.
 - **Study terraform-ls first** (HashiCorp's own) the way nil/nixd were
