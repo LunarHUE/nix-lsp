@@ -410,8 +410,7 @@ func (h *Handler) workspaceSymbol(ctx context.Context, params json.RawMessage) (
 		if err != nil {
 			continue
 		}
-		fileID := facts.FileID(read.Path, read.Hash)
-		facts.SetFileInput(h.memo, fileID, facts.FileInput{Path: read.Path, Content: read.Content})
+		fileID := facts.FileInputFor(h.memo, read.Path, read.Hash, read.Content)
 		scopeFile, err := facts.Scopes(ctx, h.memo, fileID)
 		if err != nil || scopeFile == nil {
 			continue
@@ -532,12 +531,7 @@ func (h *Handler) fileInputForURI(uri string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	fileID := facts.FileID(file.Path, file.Hash)
-	facts.SetFileInput(h.memo, fileID, facts.FileInput{
-		Path:    file.Path,
-		Content: file.Content,
-	})
-	return fileID, true
+	return facts.FileInputFor(h.memo, file.Path, file.Hash, file.Content), true
 }
 
 // definitionAt resolves the definition location for pos, or nil. A reference
@@ -696,8 +690,7 @@ func (h *Handler) parseTreeForPath(ctx context.Context, path string) (*syntax.Tr
 	if err != nil {
 		return nil, false
 	}
-	fileID := facts.FileID(read.Path, read.Hash)
-	facts.SetFileInput(h.memo, fileID, facts.FileInput{Path: read.Path, Content: read.Content})
+	fileID := facts.FileInputFor(h.memo, read.Path, read.Hash, read.Content)
 	tree, err := facts.ParseTree(ctx, h.memo, fileID)
 	if err != nil || tree == nil {
 		return nil, false

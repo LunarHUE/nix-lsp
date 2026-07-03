@@ -96,6 +96,19 @@ func SetFileInput(engine *memo.Engine, fileID string, input FileInput) {
 	engine.SetInput(FileInputKey(fileID), input)
 }
 
+// FileInputFor registers the file identified by path, contentHash, and content
+// as the current file input on the memo engine and returns its composite
+// fileID. It is the single constructor for the {FileID, SetFileInput} tuple:
+// every caller that needs a file analyzed goes through it, so registering a
+// file's identity has exactly one spelling in the codebase (grep FileID/
+// SetFileInput and you should find only this body and the singleton input
+// helpers, never an open-coded pair at a call site).
+func FileInputFor(engine *memo.Engine, path, contentHash string, content []byte) string {
+	fileID := FileID(path, contentHash)
+	SetFileInput(engine, fileID, FileInput{Path: path, Content: content})
+	return fileID
+}
+
 // WorkspaceKey returns the current workspace input key.
 func WorkspaceKey() memo.Key {
 	return memo.Key{Kind: QueryWorkspace, ID: workspaceInputID}

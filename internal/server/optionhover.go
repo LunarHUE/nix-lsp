@@ -63,7 +63,5 @@ func (h *Handler) optionFileInputForURI(uri string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	fileID := facts.FileID(file.Path, file.Hash)
-	facts.SetFileInput(h.memo, fileID, facts.FileInput{Path: file.Path, Content: file.Content})
-	return fileID, true
+	return facts.FileInputFor(h.memo, file.Path, file.Hash, file.Content), true
 }

@@ -105,9 +105,7 @@ func (h *Handler) rootFlakeInputForURI(uri string) (string, bool) {
 	if !h.isRootFlakePath(file.Path) {
 		return "", false
 	}
-	fileID := facts.FileID(file.Path, file.Hash)
-	facts.SetFileInput(h.memo, fileID, facts.FileInput{Path: file.Path, Content: file.Content})
-	return fileID, true
+	return facts.FileInputFor(h.memo, file.Path, file.Hash, file.Content), true
 }
 
 // isRootFlakeURI reports whether uri resolves to the workspace root flake.nix.

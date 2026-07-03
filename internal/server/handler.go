@@ -864,17 +864,67 @@ func (h *Handler) runFileDiagnostics(ctx context.Context, uri, path string, debo
 	_ = h.computeFileDiagnostics(ctx, snapshot, uri, path, generation, debounce)
 }
 
+// diagnosticInputs names the complete set of inputs the diagnostics publish path
+// reads for one file. The publish path spans this function plus the facts
+// FileDiagnostics query it drives (which folds in the workspace tracked-file set,
+// the git-index token, and the root flake.lock) and the datasetDiagnostics /
+// enrichSyntaxDiagnostics passes appended below (which read the options and
+// packages index snapshots directly, outside the memo layer).
+//
+// The law: if the computation reads it, it lives here. Adding a read to any leg
+// of the publish path without adding a field to this struct is a review-visible
+// omission — this type is documentation-as-code, mirroring gopls's typeCheckInputs
+// sitting next to its hasher. It is NOT a hash key and is never hashed; the memo
+// engine performs the actual invalidation from the same inputs (recorded as memo
+// inputs elsewhere), and this struct records them in one place next to their
+// consumer so the true key set is visible rather than scattered.
+type diagnosticInputs struct {
+	// path is the file's normalized absolute path — a genuine input, because
+	// relative import resolution is path-dependent.
+	path string
+	// contentHash is the SHA-256 of the file content. (path, contentHash) is the
+	// fileID that keys every file-derived memo query.
+	contentHash string
+	// workspace is the discovered workspace snapshot. Its tracked-file set feeds
+	// import-edge resolution and untracked-import warnings, and its Root gates the
+	// flake diagnostics to the root flake.nix. It reaches the FileDiagnostics query
+	// as the SetWorkspace memo input; recorded live here for the full picture.
+	workspace project.Workspace
+	// optionsIndex is the loaded NixOS options index identity (nil = not loaded).
+	// datasetDiagnostics and the syntax-error enrichment read it directly, outside
+	// the memo layer, so it must be recorded here to keep the input set honest.
+	optionsIndex *options.Index
+	// packagesIndex is the loaded packages index identity (nil = not loaded).
+	// datasetDiagnostics reads it directly, outside the memo layer.
+	packagesIndex *packages.Index
+	// gitIndexToken and flakeLockHash are the two remaining publish-path inputs.
+	// Both are singleton memo inputs — the git-index version token set by
+	// refreshGitState (SetGitState) and the raw flake.lock bytes set by
+	// refreshFlakeLock (SetFlakeLock) — which the memo engine folds into the
+	// import-edges and flake diagnostics respectively. They are named here for
+	// completeness of the input set; their authoritative values live in the memo
+	// inputs and are not re-fetched per compute (a per-keystroke stat and
+	// flake.lock read would only duplicate work the memo layer already tracks).
+	gitIndexToken string
+	flakeLockHash string
+}
+
 func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snapshot, uri string, path string, generation uint64, debounce bool) error {
 	file, err := snapshot.ReadFile(path)
 	if err != nil {
 		return err
 	}
 
-	fileID := facts.FileID(file.Path, file.Hash)
-	facts.SetFileInput(h.memo, fileID, facts.FileInput{
-		Path:    file.Path,
-		Content: file.Content,
-	})
+	workspace, _ := h.Workspace()
+	inputs := diagnosticInputs{
+		path:          file.Path,
+		contentHash:   file.Hash,
+		workspace:     workspace,
+		optionsIndex:  h.optionsSnapshot(),
+		packagesIndex: h.packagesSnapshot(),
+	}
+
+	fileID := facts.FileInputFor(h.memo, inputs.path, inputs.contentHash, file.Content)
 	diagnostics, err := facts.FileDiagnostics(ctx, h.memo, fileID)
 	if err != nil {
 		return err
