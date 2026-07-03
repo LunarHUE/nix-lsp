@@ -1,5 +1,7 @@
 # PR/push gate: `nix flake check` builds the server with the full go test
 # suite in the check phase — one command, same derivation the release ships.
+# Runs on ubuntu-latest and macos-14 so the darwin build (cgo + vendored
+# tree-sitter) is proven on every push/PR, not first at release time.
 name: ci
 
 on:
@@ -9,7 +11,11 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
