@@ -41,7 +41,7 @@
         corePackages = with pkgs; [
           nodejs_22
           pnpm
-          go
+          go_1_26
         ];
 
         devOnlyPackages = with pkgs; [
@@ -79,7 +79,7 @@
         # The language server. buildGoModule runs the full `go test ./...`
         # suite in checkPhase, so `nix build`/`nix flake check` is also the
         # verification gate.
-        nixls = pkgs.buildGoModule {
+        nixls = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "nixls";
           version = self.shortRev or self.dirtyShortRev or "dev";
           src = serverSrc;
