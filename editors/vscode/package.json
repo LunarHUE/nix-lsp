@@ -73,7 +73,7 @@
         "nixls.serverPath": {
           "type": "string",
           "default": "nixls",
-          "description": "Path to the nixls server binary. Use an absolute path to your built ./nixls, or leave as \"nixls\" to resolve it from PATH."
+          "description": "Path to the nixls server binary. An explicit path overrides everything; the default falls back to the binary bundled in platform VSIX packages, then to \"nixls\" on PATH."
         },
         "nixls.optionsPath": {
           "type": "string",

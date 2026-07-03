@@ -68,6 +68,15 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
   handler errors log to stderr and never tear down the server; the binary
   accepts `--stdio` for client compatibility.
 
+### Added — 2026-07-03
+
+- **Release packaging**: a GitHub Actions release workflow builds `nixls` per
+  platform (linux x64/arm64, macOS x64/arm64, Windows x64 — native runners,
+  since tree-sitter's cgo blocks cross-compilation) and packages
+  platform-specific VSIXes with the binary bundled; the extension resolves the
+  server as explicit `nixls.serverPath` → bundled binary → PATH. Standalone
+  binaries attach to the release for non-VS Code editors.
+
 ### Fixed — 2026-07-03
 
 - Completion now fires on trailing dots at any depth (`networking.firewall.`,

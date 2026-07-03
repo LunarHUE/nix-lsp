@@ -1,6 +1,8 @@
+# NOTE: node_modules must NOT be excluded — vscode-languageclient is a runtime
+# dependency and the extension is not bundled; vsce prunes devDependencies on
+# its own.
 .vscode/**
 src/**
-node_modules/**
 tsconfig.json
 .gitignore
 **/*.map

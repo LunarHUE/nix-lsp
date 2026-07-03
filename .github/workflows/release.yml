@@ -1,0 +1,86 @@
+# Builds nixls per platform (cgo/tree-sitter requires native toolchains, so a
+# runner matrix instead of cross-compilation) and packages one platform-specific
+# VSIX per target with the binary bundled at bin/nixls[.exe]. Runs on version
+# tags; artifacts attach to the GitHub release. Marketplace publishing is a
+# manual `vsce publish` on the produced VSIXes (or add VSCE_PAT later).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            exe: nixls
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            exe: nixls
+          - os: macos-13
+            target: darwin-x64
+            exe: nixls
+          - os: macos-14
+            target: darwin-arm64
+            exe: nixls
+          - os: windows-latest
+            target: win32-x64
+            exe: nixls.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build server
+        shell: bash
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o editors/vscode/bin/${{ matrix.exe }} ./cmd/nixls
+          editors/vscode/bin/${{ matrix.exe }} -version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Package platform VSIX
+        shell: bash
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npm run compile
+          npx @vscode/vsce package --target ${{ matrix.target }} -o nixls-${{ matrix.target }}.vsix
+
+      - name: Rename standalone binary
+        shell: bash
+        run: cp editors/vscode/bin/${{ matrix.exe }} nixls-${{ matrix.target }}${{ matrix.target == 'win32-x64' && '.exe' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nixls-${{ matrix.target }}
+          path: |
+            editors/vscode/nixls-${{ matrix.target }}.vsix
+            nixls-${{ matrix.target }}*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.vsix
+            nixls-*

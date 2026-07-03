@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as vscode from "vscode";
 import {
   LanguageClient,
@@ -16,11 +17,29 @@ let restarting = false;
 // passed in so they survive client.stop(): the client hooks fresh change
 // listeners onto them on each start and disposes only those listeners on stop,
 // never the watchers themselves.
-function createClient(watchers: vscode.FileSystemWatcher[]): LanguageClient {
+// bundledServerPath returns the platform binary shipped inside the extension
+// (bin/nixls[.exe] in platform-specific VSIX packages), or undefined in a dev
+// checkout where no binary is bundled.
+function bundledServerPath(context: vscode.ExtensionContext): string | undefined {
+  const exe = process.platform === "win32" ? "nixls.exe" : "nixls";
+  const p = vscode.Uri.joinPath(context.extensionUri, "bin", exe).fsPath;
+  return fs.existsSync(p) ? p : undefined;
+}
+
+function createClient(
+  context: vscode.ExtensionContext,
+  watchers: vscode.FileSystemWatcher[]
+): LanguageClient {
   const nixlsConfig = vscode.workspace.getConfiguration("nixls");
   const configured = nixlsConfig.get<string>("serverPath");
-  const command =
-    configured && configured.trim().length > 0 ? configured : "nixls";
+  // Resolution order: an explicit nixls.serverPath (anything but the default
+  // "nixls") wins, then the binary bundled in the VSIX, then PATH lookup.
+  let command = "nixls";
+  if (configured && configured.trim().length > 0 && configured !== "nixls") {
+    command = configured;
+  } else {
+    command = bundledServerPath(context) ?? "nixls";
+  }
 
   // nixls.optionsPath / nixls.packagesPath forward to the server as
   // initializationOptions: a local dataset file for NixOS option / package
@@ -65,7 +84,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // start() returns a promise; failures (e.g. binary not found) surface in the
   // "nixls" output channel.
-  client = createClient(watchers);
+  client = createClient(context, watchers);
   void client.start();
   context.subscriptions.push({
     dispose: () => {
@@ -92,7 +111,7 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           client = undefined;
         }
-        client = createClient(watchers);
+        client = createClient(context, watchers);
         try {
           await client.start();
           vscode.window.setStatusBarMessage("nixls: server restarted", 3000);
