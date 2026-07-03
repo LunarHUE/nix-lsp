@@ -70,6 +70,16 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-03
 
+- **Typo diagnostics with quick fixes**: a misspelled option path in a NixOS
+  module (`networking.firewal.enable`) warns `unknown-option` with "Change to
+  'firewall'" fixes, and a misspelled `pkgs.<attr>` (`pkgs.htoop`) warns
+  `unknown-package` suggesting `htop`. Deliberately conservative: options only
+  in module-shaped files under known namespaces (installer-profile paths like
+  `isoImage.*` stay silent), wildcard instance names always accepted, packages
+  only flagged when a near-miss exists (so `pkgs.lib.mkIf` never squiggles).
+  Diagnostics refresh automatically for open files when a dataset finishes
+  loading.
+
 - **Release packaging**: a GitHub Actions release workflow builds `nixls` per
   platform (linux x64/arm64, macOS x64/arm64, Windows x64 — native runners,
   since tree-sitter's cgo blocks cross-compilation) and packages

@@ -104,7 +104,7 @@ func (h *Handler) loadOptionsFromFile(path string) {
 		logOptions("parse %s: %v", path, err)
 		return
 	}
-	h.optionsIndex.Store(ix)
+	h.storeOptionsIndex(ix)
 }
 
 // startOptionsAutoLoad kicks off the auto-mode load on a background goroutine that
@@ -171,7 +171,7 @@ func (h *Handler) loadOptionsAuto(ctx context.Context) {
 		logOptions("parse download %s: %v", channel, err)
 		return
 	}
-	h.optionsIndex.Store(ix)
+	h.storeOptionsIndex(ix)
 }
 
 // publishOptionsFromCache parses the cache file at path and publishes the index,
@@ -185,7 +185,7 @@ func (h *Handler) publishOptionsFromCache(path string) bool {
 	if err != nil {
 		return false
 	}
-	h.optionsIndex.Store(ix)
+	h.storeOptionsIndex(ix)
 	return true
 }
 

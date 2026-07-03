@@ -267,36 +267,39 @@ func (h *Handler) codeAction(ctx context.Context, params json.RawMessage) (any, 
 	if !ok {
 		return nil, nil
 	}
-	workspace, ok := h.Workspace()
-	if !ok {
-		return nil, nil
-	}
-	edges, err := facts.ImportEdges(ctx, h.memo, fileID)
-	if err != nil {
-		return nil, nil
-	}
 
 	requested := syntax.Range{
 		Start: syntax.Position{Line: decoded.Range.Start.Line, Character: decoded.Range.Start.Character},
 		End:   syntax.Position{Line: decoded.Range.End.Line, Character: decoded.Range.End.Character},
 	}
 	var actions []CodeAction
-	for _, edge := range edges {
-		// Guard Exists exactly as ImportDiagnostics does: a missing target is a
-		// separate (non-fixable) diagnostic, and ShouldWarnUntracked alone does
-		// not distinguish it. This keeps the fix strictly where the warning is.
-		if !edge.Exists || !static.ShouldWarnUntracked(workspace, edge) {
-			continue
+	// The untracked-import git-add fix needs the discovered workspace and resolved
+	// import edges; the dataset and flake fixes below do not, so a file opened
+	// outside a workspace still offers them.
+	if workspace, ok := h.Workspace(); ok {
+		if edges, err := facts.ImportEdges(ctx, h.memo, fileID); err == nil {
+			for _, edge := range edges {
+				// Guard Exists exactly as ImportDiagnostics does: a missing target is a
+				// separate (non-fixable) diagnostic, and ShouldWarnUntracked alone does
+				// not distinguish it. This keeps the fix strictly where the warning is.
+				if !edge.Exists || !static.ShouldWarnUntracked(workspace, edge) {
+					continue
+				}
+				if !rangesOverlap(edge.Range, requested) {
+					continue
+				}
+				actions = append(actions, h.gitAddCodeAction(ctx, fileID, workspace, edge))
+			}
 		}
-		if !rangesOverlap(edge.Range, requested) {
-			continue
-		}
-		actions = append(actions, h.gitAddCodeAction(ctx, fileID, workspace, edge))
 	}
 	// Root flake.nix edit-based quick fixes (remove/add input, follows did-you-mean)
 	// append to the same response; they gate on the root flake and their own
 	// diagnostics internally, so a non-flake file adds nothing here.
 	actions = append(actions, h.flakeCodeActions(ctx, fileID, decoded.TextDocument.URI, requested)...)
+	// Dataset did-you-mean fixes (unknown-option, unknown-package); they gate on the
+	// loaded indexes and their own recomputed diagnostics, so a file with neither
+	// index nor a flagged range adds nothing here.
+	actions = append(actions, h.datasetCodeActions(ctx, fileID, decoded.TextDocument.URI, requested)...)
 	if len(actions) == 0 {
 		return nil, nil
 	}

@@ -76,7 +76,7 @@ func (h *Handler) loadPackagesFromFile(path string) {
 		logPackages("parse %s: %v", path, err)
 		return
 	}
-	h.packagesIndex.Store(ix)
+	h.storePackagesIndex(ix)
 }
 
 // startPackagesAutoLoad kicks off the auto-mode load on a background goroutine that
@@ -140,7 +140,7 @@ func (h *Handler) loadPackagesAuto(ctx context.Context) {
 	} else if err := writeCacheFileAtomic(cachePath, trimmed); err != nil {
 		logPackages("cache write %s: %v", cachePath, err)
 	}
-	h.packagesIndex.Store(ix)
+	h.storePackagesIndex(ix)
 }
 
 // downloadPackagesIndex streams the packages.json.br artifact for channel directly
@@ -168,7 +168,7 @@ func (h *Handler) publishPackagesFromCache(path string) bool {
 	if err != nil {
 		return false
 	}
-	h.packagesIndex.Store(ix)
+	h.storePackagesIndex(ix)
 	return true
 }
 

@@ -703,6 +703,11 @@ func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snap
 	if err != nil {
 		return err
 	}
+	// Dataset diagnostics (unknown-option, unknown-package) depend on the loaded
+	// index identity rather than file content, so they cannot be memoized in the
+	// FileDiagnostics fact; append them here so every publish path includes them
+	// once the indexes are loaded.
+	diagnostics = append(diagnostics, h.datasetDiagnostics(ctx, fileID)...)
 
 	// Guard the in-memory cache by generation: a slower, older-generation
 	// compute (e.g. a didOpen task that lands after a newer didChange) must not
