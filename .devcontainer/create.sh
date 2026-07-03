@@ -46,3 +46,6 @@ git lfs install --skip-repo
 # Surface the active Nix version in creation logs so a drift from the pinned
 # installer version (see .devcontainer/Dockerfile) is immediately visible.
 echo "nix version: $(nix --version)"
+
+echo "Warming the nix devshell (first run on a fresh /nix volume can take several minutes)..."
+nix develop "$WORKSPACE_DIR" --command true
