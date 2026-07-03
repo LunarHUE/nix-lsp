@@ -2,14 +2,19 @@
 # server and its platform VSIX with a single `nix build .#vsix` (buildGoModule
 # runs the full test suite in its check phase, so the build IS the gate).
 # Windows is the one exception — nix does not run there, so it keeps a plain
-# Go + npm job producing the same artifact shape. Runs on version tags;
-# artifacts attach to the GitHub release. Marketplace publishing is a manual
-# `vsce publish` on the produced VSIXes (or add VSCE_PAT later).
+# Go + npm job producing the same artifact shape. Runs on pushed v* tags AND
+# on releases created in the GitHub UI (including prereleases — the UI flow
+# fires a `release` event, not a tag push); either way the artifacts attach
+# to the release, preserving its prerelease flag. A workflow_dispatch run
+# builds artifacts only (no release to attach to). Marketplace publishing is
+# a manual `vsce publish` on the produced VSIXes (or add VSCE_PAT later).
 name: release
 
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -90,13 +95,16 @@ jobs:
   release:
     needs: [nix, windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      # On a `release` event this updates the existing (pre)release in place,
+      # keeping its prerelease flag; on a tag push it creates the release.
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
           files: |
             *.vsix
             nixls-*
