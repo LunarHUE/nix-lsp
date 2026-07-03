@@ -25,7 +25,8 @@ ENV LC_ALL=en_US.UTF-8
 RUN curl --proto '=https' --tlsv1.2 -sSf -L \
     https://install.determinate.systems/nix/tag/v3.21.1 | sh -s -- install linux \
     --no-confirm --init none --extra-conf "filter-syscalls = false" \
-&& sed -i '/install\.determinate\.systems/d' /etc/nix/nix.conf
+&& sed -i '/install\.determinate\.systems/d' /etc/nix/nix.conf \
+&& /nix/var/nix/profiles/default/bin/nix --version | grep -qF "Determinate Nix 3.21.1"
 
 # Must be bumped together with the pinned installer tag above.
 ENV NIX_EXPECTED_VERSION=3.21.1
