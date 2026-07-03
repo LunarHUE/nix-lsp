@@ -338,7 +338,10 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 			total := len(workspace.Files)
 			lastPct := -1
 			for i, file := range workspace.Files {
-				_ = h.computeFileDiagnostics(ctx, snapshot, file.URI, file.Path, h.nextGeneration(), false)
+				// Per-file fresh read, not the pinned snapshot: indexing takes long
+				// enough that an open buffer edited mid-walk would otherwise be
+				// republished from its stale pre-walk copy under a newer generation.
+				h.republishFileDiagnostics(ctx, file.URI, file.Path, false)
 				if progress != nil && total > 0 {
 					if pct := 100 * (i + 1) / total; pct != lastPct {
 						lastPct = pct
@@ -605,28 +608,49 @@ func (h *Handler) refreshWatchedFiles(ctx context.Context, root string, changes 
 			h.publishEmptyDiagnostics(change.uri)
 			continue
 		}
-		_ = h.computeFileDiagnostics(ctx, snapshot, change.uri, change.path, h.nextGeneration(), false)
+		h.republishFileDiagnostics(ctx, change.uri, change.path, false)
 	}
 
 	// Recomputing every workspace file after a tracked-set change is unbounded.
 	// Open files are few, so refresh them to pick up untracked-import warnings
-	// that changed elsewhere while staying bounded.
-	for _, open := range openFiles(snapshot) {
-		_ = h.computeFileDiagnostics(ctx, snapshot, open.uri, open.path, h.nextGeneration(), true)
+	// that changed elsewhere while staying bounded. This MUST go through the
+	// coalescer, not a direct compute against the snapshot pinned above: the
+	// changed-files loop can run long, and a direct compute here would take a
+	// generation newer than any edit that landed mid-loop while publishing the
+	// pinned (older) buffer content — a stale error that then sticks until the
+	// next edit (the reported semicolon-stays-missing bug).
+	for _, open := range openFiles(h.vfs.Snapshot()) {
+		h.diag.schedule(open.uri, open.path, true)
 	}
 
 	// The root flake.nix flake diagnostics depend on the lock and the re-discovered
-	// workspace, so recompute it here unless it was already handled as a changed or
-	// open file above (its own generation path avoids a duplicate publish).
+	// workspace, so recompute it here unless it was already handled as a changed
+	// file above (open flake buffers were rescheduled with the open files).
 	if root != "" {
 		flakePath := filepath.Join(root, "flake.nix")
-		if open, err := snapshot.HasOverlay(flakePath); err == nil && !open && !changed[flakePath] {
+		if !changed[flakePath] {
 			if uri, err := vfs.PathToURI(flakePath); err == nil {
-				_ = h.computeFileDiagnostics(ctx, snapshot, uri, flakePath, h.nextGeneration(), false)
+				h.republishFileDiagnostics(ctx, uri, flakePath, false)
 			}
 		}
 	}
 	return nil
+}
+
+// republishFileDiagnostics recomputes and republishes diagnostics for one file
+// from background refresh paths (watched-files, dataset loads, indexing). An
+// open document routes through the per-URI coalescer so a republish serializes
+// with the didChange edit path instead of racing it; anything else recomputes
+// inline via runFileDiagnostics, whose generation-before-content-read ordering
+// guarantees a concurrently arriving newer buffer always wins the publish.
+// Never pass a previously pinned snapshot's content here: reading fresh state
+// under a fresh generation is the whole point.
+func (h *Handler) republishFileDiagnostics(ctx context.Context, uri string, path string, debounce bool) {
+	if open, err := h.vfs.Snapshot().HasOverlay(path); err == nil && open {
+		h.diag.schedule(uri, path, debounce)
+		return
+	}
+	h.runFileDiagnostics(ctx, uri, path, debounce)
 }
 
 // refreshFlakeLock reads flake.lock from snapshot for the known workspace root

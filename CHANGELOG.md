@@ -139,6 +139,18 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Fixed — 2026-07-03
 
+- **Stale diagnostics surviving a fix-up edit (semicolon stays "missing" until
+  restart)**: background republish paths — the watched-files refresh (which VS
+  Code triggers via `.git/index` after every autosave in a git repo), the
+  dataset-load refresh, and initial workspace indexing — pinned a VFS snapshot
+  up front but took publish generations per file after arbitrarily long work.
+  An edit landing in that window published the corrected buffer under an older
+  generation, and the refresh then republished the pinned stale content under a
+  newer one, permanently: re-adding a deleted `;` left the "missing ';'" error
+  on screen until the server restarted. All republish paths now read fresh
+  state under a generation taken before the read, and open documents always
+  republish through the per-URI coalescer so a background refresh can never
+  race the edit path.
 - **Stale untracked-import warning after terminal `git add`**: git state was
   invisible to both the file watcher (which ignored `.git`) and the memoized
   import analysis (git-tracking was baked into cached edges). The extension
