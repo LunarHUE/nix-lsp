@@ -25,8 +25,9 @@ func TestWatchedFilesRefreshDoesNotClobberNewerBuffer(t *testing.T) {
 
 	// Enough changed-on-disk files to hold the refresh busy between its snapshot
 	// pin and its open-file republish loop while the fix-up edit lands.
+	const numChanged = 300
 	var changed []map[string]any
-	for k := range 300 {
+	for k := range numChanged {
 		path := filepath.Join(dir, fmt.Sprintf("changed-%d.nix", k))
 		if err := os.WriteFile(path, fmt.Appendf(nil, "{ file = %d; }\n", k), 0o644); err != nil {
 			t.Fatalf("write changed file: %v", err)
@@ -49,13 +50,21 @@ func TestWatchedFilesRefreshDoesNotClobberNewerBuffer(t *testing.T) {
 
 	// The autosave aftermath: watcher reports the changed files. The refresh
 	// task pins its snapshot (broken buffer) and starts chewing the big files.
+	// Baseline the global generation now: the refresh recomputes each of the
+	// numChanged files inline (one generation bump apiece) before it republishes
+	// the open files, so the open buffer's refresh reschedule lands at a
+	// generation past baseline+numChanged.
+	baseGen := currentGeneration(handler)
 	if _, err := handler.Handle(context.Background(), "workspace/didChangeWatchedFiles", mustJSON(t, map[string]any{
 		"changes": changed,
 	})); err != nil {
 		t.Fatalf("didChangeWatchedFiles error = %v", err)
 	}
 
-	// The user re-adds the semicolon while the refresh is mid-chew.
+	// The user re-adds the semicolon while the refresh is mid-chew. This sleep
+	// deliberately exercises the timing hazard — it lets the refresh get past its
+	// snapshot pin and into the changed-files loop before the fix-up edit lands,
+	// which is the exact interleaving that used to resurrect the stale buffer.
 	time.Sleep(20 * time.Millisecond)
 	if _, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
 		"textDocument":   map[string]any{"uri": uri, "version": 2},
@@ -69,11 +78,11 @@ func TestWatchedFilesRefreshDoesNotClobberNewerBuffer(t *testing.T) {
 	if got := waitForDiagnostics(t, handler, uri, 0); len(got) != 0 {
 		t.Fatalf("diagnostics after fix-up edit = %+v, want none", got)
 	}
-	time.Sleep(1500 * time.Millisecond)
-	handler.mu.RLock()
-	got := handler.diagnostics[uri]
-	handler.mu.RUnlock()
-	if len(got) != 0 {
+	// Block until the refresh's own open-file republish lands (its generation
+	// clears baseline+numChanged, only reachable after the whole changed-files
+	// loop): that is the publish that used to carry the pinned broken buffer. It
+	// must read the fresh (clean) buffer and leave no diagnostics.
+	if got := waitForDiagnosticsGen(t, handler, uri, baseGen+numChanged); len(got) != 0 {
 		t.Fatalf("stale diagnostics resurrected by the watched-files refresh: %+v", got)
 	}
 }
@@ -110,7 +119,11 @@ func TestDatasetRefreshDoesNotClobberNewerBuffer(t *testing.T) {
 	if got := waitForDiagnostics(t, handler, uri, 0); len(got) != 0 {
 		t.Fatalf("diagnostics after fix-up edit = %+v, want none", got)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// refreshOpenDiagnostics scheduled uri into the coalescer synchronously above,
+	// so draining it settles both that reschedule and the fix-up edit. Once the
+	// coalescer has no pending recompute for uri, the cache holds the final
+	// content — it must be clean, never the refresh's pinned broken snapshot.
+	waitForDiagIdle(t, handler, uri)
 	handler.mu.RLock()
 	got := handler.diagnostics[uri]
 	handler.mu.RUnlock()

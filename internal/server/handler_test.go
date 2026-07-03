@@ -668,18 +668,139 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+// waitForDiagnostics polls until uri's cached diagnostics reach the wanted
+// count, then returns them. It fails loudly on its deadline instead of returning
+// the last state silently, so a `want: 0` assertion can never pass merely because
+// the deadline lapsed. NOTE: for "assert absence" checks (want 0 on a buffer that
+// should stay clean) prefer waitForDiagnosticsGen — a fresh cache is empty before
+// the first compute, so this poller would return that transient empty state
+// without proving any compute ran.
 func waitForDiagnostics(t *testing.T, handler *Handler, uri string, want int) []syntax.Diagnostic {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	var diagnostics []syntax.Diagnostic
-	for time.Now().Before(deadline) {
-		diagnostics = handler.Diagnostics(uri)
+	deadline := time.After(5 * time.Second)
+	for {
+		// Read the state and the broadcast channel under ONE lock hold: grabbing
+		// them separately lets a publish slip between the check and the wait,
+		// closing the old channel and parking us on the new one — a missed wakeup
+		// that turns an already-satisfied wait into a spurious timeout.
+		handler.mu.RLock()
+		diagnostics := cloneDiagnostics(handler.diagnostics[uri])
+		ch := handler.diagPublished
+		handler.mu.RUnlock()
 		if len(diagnostics) == want {
 			return diagnostics
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ch:
+		case <-deadline:
+			have := handler.Diagnostics(uri)
+			t.Fatalf("timed out waiting for %d diagnostics on %s; have %d: %+v", want, uri, len(have), have)
+			return nil
+		}
 	}
-	return diagnostics
+}
+
+// publishedGen returns the last published diagnostic generation for uri (0 if it
+// has never published). Baseline it before a triggering action, then wait for
+// baseline+1 to block until that action's recompute lands.
+func publishedGen(handler *Handler, uri string) uint64 {
+	handler.mu.RLock()
+	defer handler.mu.RUnlock()
+	return handler.diagGeneration[uri]
+}
+
+// currentGeneration returns the handler's global diagnostics generation counter,
+// which advances once per recompute across all URIs.
+func currentGeneration(handler *Handler) uint64 {
+	handler.mu.RLock()
+	defer handler.mu.RUnlock()
+	return handler.generation
+}
+
+// waitForDiagnosticsGen blocks until uri's published diagnostic generation
+// reaches minGen, returning the diagnostics cached as of that publish. It wakes
+// on the handler's publish broadcast (no polling) and fails loudly after 5s with
+// the last-seen state. Unlike waitForDiagnostics it proves a compute at or beyond
+// minGen actually ran, so it never passes vacuously on an as-yet-uncomputed
+// buffer.
+func waitForDiagnosticsGen(t *testing.T, handler *Handler, uri string, minGen uint64) []syntax.Diagnostic {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		handler.mu.RLock()
+		gen := handler.diagGeneration[uri]
+		ch := handler.diagPublished
+		var diagnostics []syntax.Diagnostic
+		if gen >= minGen {
+			diagnostics = cloneDiagnostics(handler.diagnostics[uri])
+		}
+		handler.mu.RUnlock()
+		if gen >= minGen {
+			return diagnostics
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			handler.mu.RLock()
+			have := handler.diagGeneration[uri]
+			snapshot := cloneDiagnostics(handler.diagnostics[uri])
+			handler.mu.RUnlock()
+			t.Fatalf("timed out waiting for %s diagnostics gen>=%d; have gen=%d diags=%+v", uri, minGen, have, snapshot)
+			return nil
+		}
+	}
+}
+
+// waitForGlobalGen blocks until the handler's global generation counter reaches
+// minGen, waking on each publish broadcast. It fails loudly after 5s. Used to
+// wait out a background refresh's inline recompute burst before checking a URI it
+// republishes last.
+func waitForGlobalGen(t *testing.T, handler *Handler, minGen uint64) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		handler.mu.RLock()
+		gen := handler.generation
+		ch := handler.diagPublished
+		handler.mu.RUnlock()
+		if gen >= minGen {
+			return
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatalf("timed out waiting for global generation >= %d; have %d", minGen, currentGeneration(handler))
+			return
+		}
+	}
+}
+
+// waitForDiagIdle blocks until the per-URI diagnostics coalescer has no pending
+// recompute for uri, i.e. every scheduled compute (including a background
+// refresh's reschedule) has drained and the cache holds the final content. It
+// wakes on publish broadcasts, with a short fallback tick to observe the
+// coalescer's own (unsignaled) pending-map delete, and fails loudly after 5s.
+func waitForDiagIdle(t *testing.T, handler *Handler, uri string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		handler.diag.mu.Lock()
+		_, pending := handler.diag.pending[uri]
+		handler.diag.mu.Unlock()
+		if !pending {
+			return
+		}
+		handler.mu.RLock()
+		ch := handler.diagPublished
+		handler.mu.RUnlock()
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("timed out waiting for coalescer to drain %s", uri)
+			return
+		}
+	}
 }
 
 func waitForPublish(t *testing.T, notifier *captureNotifier, uri string, diagnosticCount int) publishDiagnosticsParams {

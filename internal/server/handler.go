@@ -43,6 +43,11 @@ type Handler struct {
 	mu             sync.RWMutex
 	diagnostics    map[string][]syntax.Diagnostic
 	diagGeneration map[string]uint64
+	// diagPublished is a broadcast channel closed (and replaced) under mu every
+	// time a URI's published diagnostic generation advances. It lets in-process
+	// waiters (tests) block for a specific generation to land instead of polling
+	// with sleeps. Never send on it; only close/replace signals a broadcast.
+	diagPublished chan struct{}
 	workspace      project.Workspace
 	workspaceOK    bool
 	workspaceErr   error
@@ -132,6 +137,7 @@ func NewHandler() *Handler {
 		publisher:      newDiagnosticsPublisher(),
 		diagnostics:    make(map[string][]syntax.Diagnostic),
 		diagGeneration: make(map[string]uint64),
+		diagPublished:  make(chan struct{}),
 	}
 	handler.optionsCtx, handler.optionsCancel = context.WithCancel(context.Background())
 	handler.diag = newDiagScheduler(handler.enqueueBackground, handler.runFileDiagnostics)
@@ -466,6 +472,7 @@ func (h *Handler) publishEmptyDiagnostics(uri string) {
 	h.mu.Lock()
 	delete(h.diagnostics, uri)
 	h.diagGeneration[uri] = generation
+	h.signalDiagPublished()
 	h.mu.Unlock()
 	h.publisher.Publish(diagnosticUpdate{
 		URI:        uri,
@@ -843,6 +850,7 @@ func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snap
 	}
 	h.diagGeneration[uri] = generation
 	h.diagnostics[uri] = cloneDiagnostics(diagnostics)
+	h.signalDiagPublished()
 	h.mu.Unlock()
 
 	h.publisher.Publish(diagnosticUpdate{
@@ -859,6 +867,16 @@ func (h *Handler) nextGeneration() uint64 {
 	defer h.mu.Unlock()
 	h.generation++
 	return h.generation
+}
+
+// signalDiagPublished broadcasts that some URI's published diagnostic generation
+// advanced. Callers must hold h.mu. Closing the current channel wakes every
+// waiter blocked on it; a fresh channel replaces it for the next round.
+func (h *Handler) signalDiagPublished() {
+	if h.diagPublished != nil {
+		close(h.diagPublished)
+		h.diagPublished = make(chan struct{})
+	}
 }
 
 func cloneDiagnostics(diagnostics []syntax.Diagnostic) []syntax.Diagnostic {

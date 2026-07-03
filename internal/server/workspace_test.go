@@ -238,12 +238,15 @@ func TestHandlerWatchedFilesIgnoresOpenBuffer(t *testing.T) {
 	writeFile(t, source, "{}")
 
 	// A watched-file change for the OPEN document must not clobber the buffer's
-	// diagnostics with the (valid) disk content.
+	// diagnostics with the (valid) disk content. didChangeWatchedFiles handles an
+	// open-buffer-only change synchronously and should submit no refresh task at
+	// all (the overlay skip in the handler) — but the point of this test is to
+	// catch a regression where it DOES schedule one, so drain the coalescer
+	// before asserting: a wrongly scheduled recompute then lands its clobber
+	// where the assertion sees it, deterministically.
 	sendWatchedFiles(t, handler, []map[string]any{{"uri": sourceURI, "type": 2}})
+	waitForDiagIdle(t, handler, sourceURI)
 
-	// Give any (incorrect) recompute a chance to land, then confirm the buffer's
-	// error diagnostic still stands.
-	time.Sleep(100 * time.Millisecond)
 	got := handler.Diagnostics(sourceURI)
 	if len(got) != 1 || got[0].Message != "missing import target ./missing.nix" {
 		t.Fatalf("diagnostics after watched change = %+v, want buffer's missing-import error", got)

@@ -8,21 +8,32 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 )
 
-// waitForDiagnosticCode polls until a diagnostic with the given code is present
-// for uri, returning it, or fails after a deadline.
+// waitForDiagnosticCode blocks until a diagnostic with the given code is present
+// for uri, returning it, or fails loudly after a deadline. It wakes on the
+// handler's publish broadcast instead of a fixed poll so it converges as fast as
+// the recompute lands (and stays reliable under -race).
 func waitForDiagnosticCode(t *testing.T, handler *Handler, uri, code string) syntax.Diagnostic {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		for _, d := range handler.Diagnostics(uri) {
+	deadline := time.After(5 * time.Second)
+	for {
+		// State and broadcast channel under one lock hold, else a publish between
+		// the two reads is a missed wakeup (see waitForDiagnostics).
+		handler.mu.RLock()
+		diagnostics := cloneDiagnostics(handler.diagnostics[uri])
+		ch := handler.diagPublished
+		handler.mu.RUnlock()
+		for _, d := range diagnostics {
 			if d.Code == code {
 				return d
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatalf("timed out waiting for diagnostic code %q on %s; have %+v", code, uri, handler.Diagnostics(uri))
+			return syntax.Diagnostic{}
+		}
 	}
-	t.Fatalf("timed out waiting for diagnostic code %q on %s; have %+v", code, uri, handler.Diagnostics(uri))
-	return syntax.Diagnostic{}
 }
 
 // diagnosticWithCode returns the first diagnostic with code, or ok=false.
@@ -48,9 +59,11 @@ func TestDatasetNoOptionDiagnosticsWithoutIndex(t *testing.T) {
   networking.firewal.enable = true;
 }
 `
+	before := publishedGen(handler, uri)
 	openDocument(t, handler, uri, src)
-	// Let any background diagnostics settle, then assert none carry the dataset code.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the didOpen recompute to actually publish, then assert none carry
+	// the dataset code (proving absence, not just checking before any compute).
+	waitForDiagnosticsGen(t, handler, uri, before+1)
 	if _, ok := diagnosticWithCode(handler.Diagnostics(uri), datadiag.CodeUnknownOption); ok {
 		t.Fatalf("unexpected unknown-option diagnostic without a loaded index: %+v", handler.Diagnostics(uri))
 	}
@@ -189,9 +202,10 @@ func TestDatasetUserRealModuleNoDiagnostics(t *testing.T) {
   nix.settings.auto-optimise-store = true;
 }
 `
+	before := publishedGen(handler, uri)
 	openDocument(t, handler, uri, src)
-	// Let background diagnostics settle, then assert nothing was published.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the didOpen recompute to publish, then assert nothing was flagged.
+	waitForDiagnosticsGen(t, handler, uri, before+1)
 	if diags := handler.Diagnostics(uri); len(diags) != 0 {
 		t.Fatalf("diagnostics = %+v, want none", diags)
 	}
@@ -245,8 +259,10 @@ func TestDatasetRefreshOnLoadRepublishes(t *testing.T) {
   networking.firewal.enable = true;
 }
 `
+	before := publishedGen(handler, uri)
 	openDocument(t, handler, uri, src)
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the didOpen recompute to publish, then assert no dataset code yet.
+	waitForDiagnosticsGen(t, handler, uri, before+1)
 	if _, ok := diagnosticWithCode(handler.Diagnostics(uri), datadiag.CodeUnknownOption); ok {
 		t.Fatalf("unexpected unknown-option before the index loaded")
 	}

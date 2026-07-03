@@ -23,12 +23,16 @@ func TestDidChangeDoesNotFreezeReadLoopWhenQueueSaturated(t *testing.T) {
 	uri := mustURI(t, path)
 	openDocument(t, handler, uri, "{ ok = true; }")
 
-	// Park both workers, then fill the background queue (cap 64).
+	// Park both workers, then fill the background queue (cap 64). Each park signals
+	// as it begins executing, so receiving twice deterministically confirms both
+	// workers are occupied before we flood the queue — no sleep-and-hope.
 	release := make(chan struct{})
-	park := func(context.Context) error { <-release; return nil }
+	parked := make(chan struct{}, 2)
+	park := func(context.Context) error { parked <- struct{}{}; <-release; return nil }
 	handler.tasks.Submit(context.Background(), lsp.LaneBackground, park)
 	handler.tasks.Submit(context.Background(), lsp.LaneBackground, park)
-	time.Sleep(50 * time.Millisecond)
+	<-parked
+	<-parked
 	noop := func(context.Context) error { return nil }
 	for range 64 {
 		handler.tasks.Submit(context.Background(), lsp.LaneBackground, noop)
