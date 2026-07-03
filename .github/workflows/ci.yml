@@ -1,0 +1,17 @@
+# PR/push gate: `nix flake check` builds the server with the full go test
+# suite in the check phase — one command, same derivation the release ships.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - run: nix flake check --print-build-logs

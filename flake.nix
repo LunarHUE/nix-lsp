@@ -60,7 +60,69 @@
           postgresql
           opentofu
         ];
+        # Everything the Go build needs and nothing volatile: sources, the
+        # vendored tree-sitter grammar (cgo-included from internal/syntax), and
+        # the extension assets the vsix derivation packages. Excludes built
+        # artifacts, node_modules, and local state so the store hash stays
+        # stable across dev churn.
+        serverSrc = nixpkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: _type:
+            let rel = nixpkgs.lib.removePrefix (toString ./. + "/") (toString path);
+            in !(nixpkgs.lib.hasPrefix "editors/vscode/node_modules" rel
+              || nixpkgs.lib.hasPrefix "editors/vscode/out" rel
+              || nixpkgs.lib.hasPrefix "examples" rel
+              || nixpkgs.lib.hasPrefix "docs" rel
+              || rel == "nixls");
+        };
+
+        # The language server. buildGoModule runs the full `go test ./...`
+        # suite in checkPhase, so `nix build`/`nix flake check` is also the
+        # verification gate.
+        nixls = pkgs.buildGoModule {
+          pname = "nixls";
+          version = self.shortRev or self.dirtyShortRev or "dev";
+          src = serverSrc;
+          vendorHash = "sha256-cNKRQ5ArES8Ffpq1TB4VV6cvqbPSr32qzzIdQm+mcpE=";
+          subPackages = [ "cmd/nixls" ];
+          env.CGO_ENABLED = "1";
+          ldflags = [ "-s" "-w" "-X main.version=${self.shortRev or "dev"}" ];
+        };
+        # VS Code platform target for this nix system; the vsix package exists
+        # only where the mapping does (Windows has no nix — its VSIX is built
+        # by a plain Go job in CI).
+        vsceTarget = {
+          "x86_64-linux" = "linux-x64";
+          "aarch64-linux" = "linux-arm64";
+          "x86_64-darwin" = "darwin-x64";
+          "aarch64-darwin" = "darwin-arm64";
+        }.${system} or null;
+
+        # Platform-specific VSIX with the nix-built server bundled at bin/nixls.
+        vsix = pkgs.buildNpmPackage {
+          pname = "nixls-vsix";
+          version = nixls.version;
+          src = "${serverSrc}/editors/vscode";
+          npmDepsHash = "sha256-+GNCcK8sNKbtrD2ooOxm0R32hMIXEzi327/tUq4XvKc=";
+          npmBuildScript = "compile";
+          dontNpmInstall = true;
+          nativeBuildInputs = [ pkgs.nodejs pkgs.vsce ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p bin $out
+            cp ${nixls}/bin/nixls bin/nixls
+            vsce package --target ${vsceTarget} --allow-missing-repository -o $out/nixls-${vsceTarget}.vsix
+            runHook postInstall
+          '';
+        };
       in {
+        packages = {
+          inherit nixls;
+          default = nixls;
+        } // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
+
+        checks.nixls = nixls;
+
         devShells.default = pkgs.mkShell {
           packages = corePackages ++ devOnlyPackages;
 

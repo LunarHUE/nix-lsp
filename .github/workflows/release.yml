@@ -1,8 +1,10 @@
-# Builds nixls per platform (cgo/tree-sitter requires native toolchains, so a
-# runner matrix instead of cross-compilation) and packages one platform-specific
-# VSIX per target with the binary bundled at bin/nixls[.exe]. Runs on version
-# tags; artifacts attach to the GitHub release. Marketplace publishing is a
-# manual `vsce publish` on the produced VSIXes (or add VSCE_PAT later).
+# Nix-first release pipeline: every platform that nix supports builds the
+# server and its platform VSIX with a single `nix build .#vsix` (buildGoModule
+# runs the full test suite in its check phase, so the build IS the gate).
+# Windows is the one exception — nix does not run there, so it keeps a plain
+# Go + npm job producing the same artifact shape. Runs on version tags;
+# artifacts attach to the GitHub release. Marketplace publishing is a manual
+# `vsce publish` on the produced VSIXes (or add VSCE_PAT later).
 name: release
 
 on:
@@ -14,65 +16,78 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  nix:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: linux-x64
-            exe: nixls
           - os: ubuntu-24.04-arm
             target: linux-arm64
-            exe: nixls
           - os: macos-13
             target: darwin-x64
-            exe: nixls
           - os: macos-14
             target: darwin-arm64
-            exe: nixls
-          - os: windows-latest
-            target: win32-x64
-            exe: nixls.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
 
+      - name: Build platform VSIX (tests run in the nix check phase)
+        run: nix build .#vsix --print-build-logs
+
+      - name: Stage artifacts
+        run: |
+          cp result/nixls-${{ matrix.target }}.vsix .
+          nix build .#nixls
+          cp result/bin/nixls nixls-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nixls-${{ matrix.target }}
+          path: |
+            nixls-${{ matrix.target }}.vsix
+            nixls-${{ matrix.target }}
+
+  # Windows cannot run nix; build the same artifact shape with Go + npm.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - name: Build server
         shell: bash
         run: |
-          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o editors/vscode/bin/${{ matrix.exe }} ./cmd/nixls
-          editors/vscode/bin/${{ matrix.exe }} -version
-
+          go test ./...
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o editors/vscode/bin/nixls.exe ./cmd/nixls
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Package platform VSIX
         shell: bash
         working-directory: editors/vscode
         run: |
           npm ci
           npm run compile
-          npx @vscode/vsce package --target ${{ matrix.target }} -o nixls-${{ matrix.target }}.vsix
-
-      - name: Rename standalone binary
+          npx @vscode/vsce package --target win32-x64 --allow-missing-repository -o nixls-win32-x64.vsix
+      - name: Stage artifacts
         shell: bash
-        run: cp editors/vscode/bin/${{ matrix.exe }} nixls-${{ matrix.target }}${{ matrix.target == 'win32-x64' && '.exe' || '' }}
-
+        run: |
+          cp editors/vscode/nixls-win32-x64.vsix .
+          cp editors/vscode/bin/nixls.exe nixls-win32-x64.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: nixls-${{ matrix.target }}
+          name: nixls-win32-x64
           path: |
-            editors/vscode/nixls-${{ matrix.target }}.vsix
-            nixls-${{ matrix.target }}*
+            nixls-win32-x64.vsix
+            nixls-win32-x64.exe
 
   release:
-    needs: build
+    needs: [nix, windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:

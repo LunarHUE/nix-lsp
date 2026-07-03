@@ -20,3 +20,4 @@ editors/vscode/out/
 
 # Per-platform server binaries staged for VSIX packaging (CI builds these)
 editors/vscode/bin/
+result
