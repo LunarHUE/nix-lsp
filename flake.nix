@@ -4,26 +4,12 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-
-    claude-code = {
-      url = "github:sadjow/claude-code-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-    };
-
-    codex-cli-nix = {
-      url = "github:sadjow/codex-cli-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
-    };
   };
 
   outputs = {
     self,
     nixpkgs,
     flake-utils,
-    codex-cli-nix,
-    claude-code,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (system:
@@ -32,31 +18,31 @@
           inherit system;
 
           config.allowUnfree = true;
-
-          overlays = [
-            claude-code.overlays.default
-          ];
         };
 
-        corePackages = with pkgs; [
-          nodejs_22
-          pnpm
+        # Build essentials shared by every devShell.
+        buildPackages = with pkgs; [
           go_1_26
+          gcc
+          nodejs_22
         ];
 
-        devOnlyPackages = with pkgs; [
+        # Interactive bash + completion, shared by every devShell.
+        bashPackages = with pkgs; [
           bashInteractive
           bash-completion
           nix-bash-completions
+        ];
 
-          # Comes from the claude-code overlay now:
-          pkgs.claude-code
+        # Extras layered on top of the lean shell for `full` only: the agent
+        # CLIs plus the heavy service/tooling stack. claude-code and codex now
+        # come straight from nixpkgs (no third-party sadjow flake inputs).
+        fullPackages = with pkgs; [
+          claude-code
+          codex
 
-          # Direct flake package, no overlay needed:
-          codex-cli-nix.packages.${system}.default
-
+          pnpm
           docker
-          gcc
           postgresql
           opentofu
         ];
@@ -173,14 +159,31 @@
           inherit nixls;
         } // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
 
+        # Lean shell: build essentials only. This is what CI's `nix develop`
+        # gates, so a breakage in the heavy `full` extras can never brick the
+        # `go`/`gcc`/`node` toolchain that all work depends on.
         devShells.default = pkgs.mkShell {
-          packages = corePackages ++ devOnlyPackages;
+          packages = buildPackages ++ bashPackages;
 
           BASH_COMPLETION_PATH =
             "${pkgs.bash-completion}/etc/profile.d/bash_completion.sh";
 
           shellHook = ''
-            echo "Nix devShell ready. node $(node --version 2>/dev/null), pnpm $(pnpm --version 2>/dev/null)"
+            echo "Nix default devShell ready. node $(node --version 2>/dev/null)"
+          '';
+        };
+
+        # Full shell: everything in default plus the agent CLIs and the heavy
+        # service/tooling extras. `.envrc` uses this so interactive terminals
+        # keep the same environment as before.
+        devShells.full = pkgs.mkShell {
+          packages = buildPackages ++ bashPackages ++ fullPackages;
+
+          BASH_COMPLETION_PATH =
+            "${pkgs.bash-completion}/etc/profile.d/bash_completion.sh";
+
+          shellHook = ''
+            echo "Nix full devShell ready. node $(node --version 2>/dev/null), pnpm $(pnpm --version 2>/dev/null)"
           '';
         };
       });
