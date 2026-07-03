@@ -34,13 +34,45 @@ func OptionDiagnostics(tree *syntax.Tree, index *options.Index) []Diagnostic {
 	if !ok {
 		return nil
 	}
+	bindings, gated := gatherModuleBindings(tree, index)
+	if !gated {
+		return nil
+	}
+
+	var out []Diagnostic
+	for _, b := range bindings {
+		if d, ok := descendOption(root, b.segs, b.ranges); ok {
+			out = append(out, d)
+		}
+	}
+	sortByRange(out)
+	return out
+}
+
+// moduleBinding is one enumerated, normalized module option binding: the full
+// composed attrpath segments (one leading `config` stripped, module-machinery
+// namespaces excluded), the matching per-segment source ranges, and the bound
+// value expression.
+type moduleBinding struct {
+	segs   []string
+	ranges []syntax.Range
+	value  syntax.Node
+}
+
+// gatherModuleBindings applies the module gate and, when it passes, returns every
+// normalized option binding in the file. gated is false when the top level is not
+// an attribute set, or the file is not a module (no `config` formal and fewer than
+// two exact documented-option hits); a caller must emit nothing in that case. It
+// is the shared front half of the option-name and option-type checks, so both see
+// exactly the same files and the same paths.
+func gatherModuleBindings(tree *syntax.Tree, index *options.Index) (bindings []moduleBinding, gated bool) {
 	body, configModule := moduleShape(tree)
 	if body.IsZero() {
-		return nil
+		return nil, false
 	}
 	bindingSet := childBindingSet(body)
 	if bindingSet.IsZero() {
-		return nil
+		return nil, false
 	}
 
 	var candidates []candidate
@@ -49,11 +81,6 @@ func OptionDiagnostics(tree *syntax.Tree, index *options.Index) []Diagnostic {
 	// Normalize each candidate (strip one leading `config`, drop module-machinery
 	// namespaces) and count how many resolve exactly to a documented option; that
 	// count is the plain-attrset half of the module gate.
-	type normalized struct {
-		segs   []string
-		ranges []syntax.Range
-	}
-	var norm []normalized
 	exactHits := 0
 	for _, cand := range candidates {
 		segs, ranges := cand.segs, cand.ranges
@@ -63,7 +90,7 @@ func OptionDiagnostics(tree *syntax.Tree, index *options.Index) []Diagnostic {
 		if len(segs) == 0 || firstSegmentSkip[segs[0]] {
 			continue
 		}
-		norm = append(norm, normalized{segs: segs, ranges: ranges})
+		bindings = append(bindings, moduleBinding{segs: segs, ranges: ranges, value: cand.value})
 		if _, ok := index.Lookup(segs); ok {
 			exactHits++
 		}
@@ -73,24 +100,17 @@ func OptionDiagnostics(tree *syntax.Tree, index *options.Index) []Diagnostic {
 	// is a module by shape; otherwise demand at least two exact documented-option
 	// hits before trusting the file to be a module.
 	if !configModule && exactHits < 2 {
-		return nil
+		return nil, false
 	}
-
-	var out []Diagnostic
-	for _, n := range norm {
-		if d, ok := descendOption(root, n.segs, n.ranges); ok {
-			out = append(out, d)
-		}
-	}
-	sortByRange(out)
-	return out
+	return bindings, true
 }
 
-// candidate is one enumerated binding attrpath: the full composed segments and
-// their matching source ranges.
+// candidate is one enumerated binding attrpath: the full composed segments, their
+// matching source ranges, and the bound value expression.
 type candidate struct {
 	segs   []string
 	ranges []syntax.Range
+	value  syntax.Node
 }
 
 // enumerate walks a binding_set, recording each binding's full attrpath (composed
@@ -114,9 +134,10 @@ func enumerate(bindingSet syntax.Node, prefixSegs []string, prefixRanges []synta
 		}
 		fullSegs := concatStrings(prefixSegs, segs)
 		fullRanges := concatRanges(prefixRanges, ranges)
-		*out = append(*out, candidate{segs: fullSegs, ranges: fullRanges})
+		value := entry.ChildByFieldName("expression")
+		*out = append(*out, candidate{segs: fullSegs, ranges: fullRanges, value: value})
 
-		if inner := attrsetBindingSet(entry.ChildByFieldName("expression")); !inner.IsZero() {
+		if inner := attrsetBindingSet(value); !inner.IsZero() {
 			enumerate(inner, fullSegs, fullRanges, depth+1, out)
 		}
 	}

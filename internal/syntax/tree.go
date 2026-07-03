@@ -123,7 +123,7 @@ func (t *Tree) Diagnostics() []Diagnostic {
 		}
 		if node.Kind() == "ERROR" {
 			diagnostics = append(diagnostics, Diagnostic{
-				Message: "syntax error",
+				Message: syntaxErrorMessage(node),
 				Range:   node.Range(),
 				Code:    "syntax-error",
 			})
@@ -131,6 +131,76 @@ func (t *Tree) Diagnostics() []Diagnostic {
 		return true
 	})
 	return diagnostics
+}
+
+// syntaxErrorMessage returns a hint-enriched message for an ERROR node whose
+// shape is a recognizable mid-edit mistake, and the plain "syntax error" for
+// anything it cannot classify with certainty. It only rewords an ERROR the
+// parser already reported; it never changes whether a diagnostic exists.
+func syntaxErrorMessage(node Node) string {
+	if name, ok := loneAttributeName(node); ok {
+		return "syntax error: attribute '" + name + "' has no value (expected '" + name + " = <value>;')"
+	}
+	if isMissingSeparator(node) {
+		return "syntax error: missing ';' after binding"
+	}
+	return "syntax error"
+}
+
+// loneAttributeName reports the single bare attribute name an ERROR node wraps,
+// the shape produced by a name written in binding position with no `= value;`.
+// Two recovery shapes are recognized: a `{ name }` value, which tree-sitter turns
+// into a `formals` node holding one plain formal (seen both for a whole-file
+// `{ wg0 }` and for a binding value `interfaces = { wg0 }`, whose ERROR is an
+// attrpath followed by that formals); and a bare name with nothing after it, whose
+// ERROR has the identifier as its only child. Requiring a single plain formal
+// keeps a partial function like `{ a, b }` or `{ pkgs, ... }` from matching.
+func loneAttributeName(errNode Node) (string, bool) {
+	children := errNode.NamedChildren()
+	for _, child := range children {
+		if child.Kind() == "formals" {
+			if name, ok := singleFormalName(child); ok {
+				return name, true
+			}
+		}
+	}
+	if len(children) == 1 && children[0].Kind() == "identifier" {
+		return children[0].Text(), true
+	}
+	return "", false
+}
+
+// singleFormalName returns the name of a formals node holding exactly one plain
+// formal: a single identifier with no default and no `...` ellipsis, which is
+// indistinguishable from a lone attribute typed into an attribute set.
+func singleFormalName(formals Node) (string, bool) {
+	if !formals.ChildByFieldName("ellipses").IsZero() {
+		return "", false
+	}
+	kids := formals.NamedChildren()
+	if len(kids) != 1 || kids[0].Kind() != "formal" {
+		return "", false
+	}
+	formal := kids[0]
+	if !formal.ChildByFieldName("default").IsZero() {
+		return "", false
+	}
+	name := formal.ChildByFieldName("name")
+	if name.IsZero() || name.Kind() != "identifier" {
+		return "", false
+	}
+	return name.Text(), true
+}
+
+// isMissingSeparator reports whether an ERROR node is the lone `=` tree-sitter
+// leaves behind when a `;` is missing between two bindings (`a = 1 b = 2;`
+// recovers as an apply of `1 b` followed by an orphan `=`). The `=` text plus an
+// apply_expression parent pins this to the missing-separator recovery.
+func isMissingSeparator(errNode Node) bool {
+	if errNode.Text() != "=" {
+		return false
+	}
+	return errNode.Parent().Kind() == "apply_expression"
 }
 
 // Walk calls fn for every node in depth-first order. Returning false skips the

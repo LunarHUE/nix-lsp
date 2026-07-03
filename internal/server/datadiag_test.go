@@ -137,6 +137,35 @@ func TestDatasetBothDiagnosticsInOneFile(t *testing.T) {
 	waitForDiagnosticCode(t, handler, uri, datadiag.CodeUnknownPackage)
 }
 
+func TestDatasetOptionTypeMismatchPublished(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	initWithDatasets(t, handler, t.TempDir(), optionsFixturePath(t), "")
+	uri := mustURI(t, "/tmp/mod.nix")
+	src := `{ config, ... }:
+{
+  networking.firewall.enable = "yes";
+}
+`
+	openDocument(t, handler, uri, src)
+
+	d := waitForDiagnosticCode(t, handler, uri, datadiag.CodeOptionTypeMismatch)
+	if want := "type mismatch: networking.firewall.enable expects boolean, got string"; d.Message != want {
+		t.Errorf("message = %q, want %q", d.Message, want)
+	}
+	// The flagged range must cover exactly the "yes" value expression.
+	got := applyEdits(t, src, []TextEdit{{Range: toProtocolRange(d.Range), NewText: "REPL"}})
+	want := `{ config, ... }:
+{
+  networking.firewall.enable = REPL;
+}
+`
+	if got != want {
+		t.Errorf("range did not cover the value; replaced source =\n%q", got)
+	}
+}
+
 func TestDatasetRefreshOnLoadRepublishes(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()

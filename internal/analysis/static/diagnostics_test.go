@@ -101,6 +101,75 @@ func TestSyntaxDiagnosticCodes(t *testing.T) {
 	}
 }
 
+// TestSyntaxErrorHints asserts recognizable ERROR shapes gain an enriched
+// message while unrecognized ones keep the generic "syntax error", and that the
+// enrichment never invents a diagnostic where the parser reports none.
+func TestSyntaxErrorHints(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string // exact message expected on at least one syntax-error diagnostic
+	}{
+		{
+			name: "bare attribute in binding position",
+			src:  "networking.wireguard.interfaces = {\n    wg0\n}\n",
+			want: "syntax error: attribute 'wg0' has no value (expected 'wg0 = <value>;')",
+		},
+		{
+			name: "lone identifier in attrset",
+			src:  "{ foo }",
+			want: "syntax error: attribute 'foo' has no value (expected 'foo = <value>;')",
+		},
+		{
+			// The user's real case: a bare name in a nested `{ }` value alongside other
+			// bindings, where the ERROR is an attrpath followed by a single-formal formals.
+			name: "bare attribute in nested attrset value",
+			src:  "{\n  services.foo.enable = true;\n  networking.wireguard.interfaces = {\n    wg0\n  }\n}\n",
+			want: "syntax error: attribute 'wg0' has no value (expected 'wg0 = <value>;')",
+		},
+		{
+			name: "missing semicolon between bindings",
+			src:  "{ foo = 1 bar = 2; }",
+			want: "syntax error: missing ';' after binding",
+		},
+		{
+			name: "unrecognized error keeps generic message",
+			src:  "foo = ;",
+			want: "syntax error",
+		},
+		{
+			name: "two formals are not a bare attribute",
+			src:  "{ a, b }",
+			want: "syntax error",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics := parse(t, tc.src).Diagnostics()
+			found := false
+			for _, d := range diagnostics {
+				if d.Code == "syntax-error" && d.Message == tc.want {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("no syntax-error diagnostic with message %q; got %+v", tc.want, diagnostics)
+			}
+		})
+	}
+}
+
+// TestSyntaxErrorHintsNoFalsePositive confirms a valid function whose formals
+// resemble the lone-identifier shape parses cleanly, so the enrichment adds no
+// diagnostic of its own.
+func TestSyntaxErrorHintsNoFalsePositive(t *testing.T) {
+	for _, src := range []string{"{ pkgs }: pkgs", "{ config, ... }: { }", "{ a = 1; }"} {
+		if diagnostics := parse(t, src).Diagnostics(); len(diagnostics) != 0 {
+			t.Errorf("%q: got %+v, want no diagnostics", src, diagnostics)
+		}
+	}
+}
+
 // TestShouldWarnUntracked covers the exported predicate the code-action handler
 // reuses to decide where the quick fix applies.
 func TestShouldWarnUntracked(t *testing.T) {

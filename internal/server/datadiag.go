@@ -35,6 +35,7 @@ func (h *Handler) datasetDiagnostics(ctx context.Context, fileID string) []synta
 
 	var out []syntax.Diagnostic
 	out = appendDataset(out, datadiag.OptionDiagnostics(tree, optionsIndex))
+	out = appendDataset(out, datadiag.OptionTypeDiagnostics(tree, optionsIndex))
 	out = appendDataset(out, datadiag.PackageDiagnostics(tree, packagesIndex))
 	return out
 }

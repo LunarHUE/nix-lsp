@@ -70,6 +70,17 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-03
 
+- **Option type checks**: a documented option bound to a literal of the wrong
+  kind warns, e.g. `type mismatch: networking.firewall.enable expects boolean,
+  got string` (code `option-type-mismatch`). Only unambiguous literals are
+  judged — references, `lib.mkIf`/`mkForce` calls, selects, and interpolated
+  strings are never second-guessed, and unmapped types (enums, packages,
+  paths) are skipped.
+- **Clearer syntax errors**: recognizable mid-edit mistakes get specific
+  messages — a bare name in binding position (`{ wg0 }`) says
+  `attribute 'wg0' has no value (expected 'wg0 = <value>;')`, and a missing
+  `;` between bindings is called out — without ever adding a diagnostic the
+  parser did not already report.
 - **Path-literal navigation**: go-to-definition follows any static path
   literal to its target (bare binding values like
   `nixosModules.x = ./module.nix`, list elements, directory imports via
