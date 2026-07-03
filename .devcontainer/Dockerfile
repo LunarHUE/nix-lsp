@@ -20,8 +20,10 @@ ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # Single-user Nix install as root — no daemon needed.
+# Pinned to Determinate Nix v3.21.1 for reproducible image builds; bumping this
+# tag is a deliberate choice (verify the new version, then update the URL).
 RUN curl --proto '=https' --tlsv1.2 -sSf -L \
-    https://install.determinate.systems/nix | sh -s -- install linux \
+    https://install.determinate.systems/nix/tag/v3.21.1 | sh -s -- install linux \
     --no-confirm --init none --extra-conf "filter-syscalls = false" \
 && sed -i '/install\.determinate\.systems/d' /etc/nix/nix.conf
 

@@ -42,3 +42,7 @@ fi
 git config --global --get-all safe.directory | grep -qxF "$WORKSPACE_DIR" \
   || git config --global --add safe.directory "$WORKSPACE_DIR"
 git lfs install --skip-repo
+
+# Surface the active Nix version in creation logs so a drift from the pinned
+# installer version (see .devcontainer/Dockerfile) is immediately visible.
+echo "nix version: $(nix --version)"
