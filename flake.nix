@@ -121,7 +121,9 @@
           default = nixls;
         } // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
 
-        checks.nixls = nixls;
+        checks = {
+          inherit nixls;
+        } // nixpkgs.lib.optionalAttrs (vsceTarget != null) { inherit vsix; };
 
         devShells.default = pkgs.mkShell {
           packages = corePackages ++ devOnlyPackages;
