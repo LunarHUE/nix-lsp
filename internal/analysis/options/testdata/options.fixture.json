@@ -364,6 +364,26 @@
     "readOnly": false,
     "type": "null or string"
   },
+  "networking.hostId": {
+    "declarations": [
+      "nixos/modules/config/networking.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "null"
+    },
+    "description": "The 8 hexadecimal character machine identifier used by ZFS and to derive persistent secrets.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "\"4e98920d\""
+    },
+    "loc": [
+      "networking",
+      "hostId"
+    ],
+    "readOnly": false,
+    "type": "null or string matching the pattern [0-9a-f]{8}"
+  },
   "time.timeZone": {
     "declarations": [
       "nixos/modules/config/locale.nix"

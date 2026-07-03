@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/options"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/packages"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/scopes"
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
@@ -56,8 +57,51 @@ func (h *Handler) contextCompletion(ctx context.Context, uri string, pos syntax.
 		return h.withPkgsCompletion(cctx)
 	case scopes.LocalName:
 		return h.localNameCompletion(file, pos, cctx)
+	case scopes.ValueString:
+		return h.valueStringCompletion(cctx)
 	}
 	return nil
+}
+
+// valueStringCompletion offers the legal values of an enum-typed option inside
+// its string value: `PermitRootLogin = "pro"` offers "prohibit-password". It
+// resolves the option by exact path (Lookup, which honors <name>/* wildcards) —
+// not LookupNearest, since a value string belongs to the concrete leaf, never a
+// group prefix — parses its enum members with the same parser the type-mismatch
+// diagnostic uses, and filters by the typed fragment. Each item's TextEdit
+// replaces the whole inside-quotes content, so picking a value overwrites the
+// partial. It returns nil (falling through to LSP null) for a non-enum option, an
+// unresolvable path, or an unloaded dataset — no other completion is meaningful
+// inside a string.
+func (h *Handler) valueStringCompletion(cctx scopes.CompletionContext) *CompletionList {
+	index := h.optionsSnapshot()
+	if index == nil {
+		return nil
+	}
+	doc, ok := index.Lookup(cctx.Prefix)
+	if !ok || doc == nil {
+		return nil
+	}
+	values, _, ok := options.EnumValues(doc.Type)
+	if !ok {
+		return nil
+	}
+	edit := toProtocolRange(cctx.Replace)
+	items := make([]CompletionItem, 0, len(values))
+	for _, v := range values {
+		if !strings.HasPrefix(v, cctx.Partial) {
+			continue
+		}
+		items = append(items, CompletionItem{
+			Label:    v,
+			Kind:     completionItemKindValue,
+			TextEdit: &TextEditItem{Range: edit, NewText: v},
+		})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return &CompletionList{Items: items}
 }
 
 // optionPathCompletion offers the completable children of the resolved option

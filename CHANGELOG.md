@@ -70,6 +70,19 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-03
 
+- **Enum and pattern value checks**: an enum-typed option bound to an illegal
+  string warns with the full legal list (`PermitRootLogin expects one of
+  "yes", "without-password", ...; got "maybe"`), with a "Change to" quick fix
+  when a legal value is a near-miss; `string without spaces` and
+  `string matching the pattern <regex>` types validate literal values too.
+  Only plain literals are judged; interpolations, `mkIf`, and anything opaque
+  stays silent.
+- **Enum value completion inside strings**: with the cursor inside the string
+  value of an enum option (`PermitRootLogin = "pro"`), completion offers the
+  legal values — including mid-edit with an unclosed quote.
+- **Hover notes missing defaults**: an option with no default renders
+  "*No default — must be set when used.*" in its hover.
+
 - **Option-aware syntax guidance**: a missing `;` after a binding — previously
   invisible (tree-sitter reports it as an anonymous zero-width token the
   diagnostics walk never visited) — now reports `missing ';' after binding`,

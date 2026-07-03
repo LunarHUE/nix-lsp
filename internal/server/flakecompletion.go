@@ -22,6 +22,9 @@ const (
 	// completionItemKindModule marks an option group or an intermediate package
 	// attribute segment (one that has deeper attributes under it).
 	completionItemKindModule = 9
+	// completionItemKindValue marks a legal enum member offered inside the string
+	// value of an enum-typed option.
+	completionItemKindValue = 12
 )
 
 // CompletionItem is one LSP completion candidate. Flake input-name completions

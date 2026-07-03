@@ -246,3 +246,114 @@ func mustIndex(t *testing.T, data string) *options.Index {
 	}
 	return index
 }
+
+func TestOptionTypeEnumMismatch(t *testing.T) {
+	src := module(`  services.openssh.settings.PermitRootLogin = "maybe";`)
+	diags := optionTypeDiags(t, src)
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(diags), diags)
+	}
+	d := diags[0]
+	if d.Code != CodeOptionTypeMismatch {
+		t.Errorf("code = %q, want %q", d.Code, CodeOptionTypeMismatch)
+	}
+	want := `type mismatch: services.openssh.settings.PermitRootLogin expects one of "yes", "without-password", "prohibit-password", "forced-commands-only", "no"; got "maybe"`
+	if d.Message != want {
+		t.Errorf("message = %q, want %q", d.Message, want)
+	}
+	if got := textInRange(t, src, d.Range); got != `"maybe"` {
+		t.Errorf("flagged text = %q, want %q", got, `"maybe"`)
+	}
+	// "maybe" is not within two edits of any legal value, so no did-you-mean.
+	if len(d.Suggestions) != 0 {
+		t.Errorf("suggestions = %v, want none", d.Suggestions)
+	}
+}
+
+func TestOptionTypeEnumSuggestion(t *testing.T) {
+	// "noo" is one edit from the legal "no", so a quoted did-you-mean is offered.
+	src := module(`  services.openssh.settings.PermitRootLogin = "noo";`)
+	diags := optionTypeDiags(t, src)
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(diags), diags)
+	}
+	if want := []string{`"no"`}; len(diags[0].Suggestions) != 1 || diags[0].Suggestions[0] != want[0] {
+		t.Errorf("suggestions = %v, want %v", diags[0].Suggestions, want)
+	}
+}
+
+func TestOptionTypeEnumValidSilent(t *testing.T) {
+	for _, v := range []string{`"prohibit-password"`, `"no"`, `null`} {
+		src := module("  services.openssh.settings.PermitRootLogin = " + v + ";")
+		if diags := optionTypeDiags(t, src); len(diags) != 0 {
+			t.Errorf("value %s: got %d diagnostics, want 0: %+v", v, len(diags), diags)
+		}
+	}
+}
+
+func TestOptionTypeEnumInterpolationSilent(t *testing.T) {
+	src := module("  services.openssh.settings.PermitRootLogin = \"${toString x}\";")
+	if diags := optionTypeDiags(t, src); len(diags) != 0 {
+		t.Errorf("interpolated enum value flagged: %+v", diags)
+	}
+}
+
+// TestOptionTypeEnumNonStringSkipped proves an integer enum is not value-checked:
+// the parser reports no string members, so any literal there is left alone.
+func TestOptionTypeEnumNonStringSkipped(t *testing.T) {
+	index := mustIndex(t, `{"x.y": {"loc": ["x","y"], "type": "one of 1, 2, 3"}, "x.z": {"loc": ["x","z"], "type": "boolean"}}`)
+	tree := mustParse(t, "{ config, ... }:\n{\n  x.y = \"maybe\";\n  x.z = true;\n}\n")
+	if diags := OptionTypeDiagnostics(tree, index); len(diags) != 0 {
+		t.Errorf("integer enum value flagged: %+v", diags)
+	}
+}
+
+func TestOptionTypePatternMismatch(t *testing.T) {
+	src := module(`  networking.hostId = "xyz";`)
+	diags := optionTypeDiags(t, src)
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(diags), diags)
+	}
+	if want := "type mismatch: networking.hostId does not match the expected pattern [0-9a-f]{8}"; diags[0].Message != want {
+		t.Errorf("message = %q, want %q", diags[0].Message, want)
+	}
+	if got := textInRange(t, src, diags[0].Range); got != `"xyz"` {
+		t.Errorf("flagged text = %q, want %q", got, `"xyz"`)
+	}
+}
+
+func TestOptionTypePatternValidSilent(t *testing.T) {
+	src := module(`  networking.hostId = "4e98920d";`)
+	if diags := optionTypeDiags(t, src); len(diags) != 0 {
+		t.Errorf("matching hostId flagged: %+v", diags)
+	}
+}
+
+// TestOptionTypePatternUncompilableSilent proves a pattern Go's regexp cannot
+// compile yields no diagnostic rather than a wrong one.
+func TestOptionTypePatternUncompilableSilent(t *testing.T) {
+	// A lookahead is Perl-only syntax Go's regexp rejects at compile time.
+	index := mustIndex(t, `{"x.y": {"loc": ["x","z"], "type": "string matching the pattern (?=a)b"}}`)
+	tree := mustParse(t, "{ config, ... }:\n{\n  x.z = \"bbb\";\n}\n")
+	if diags := OptionTypeDiagnostics(tree, index); len(diags) != 0 {
+		t.Errorf("uncompilable pattern flagged: %+v", diags)
+	}
+}
+
+func TestOptionTypeStringWithoutSpaces(t *testing.T) {
+	src := module(`  time.timeZone = "New York";`)
+	diags := optionTypeDiags(t, src)
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(diags), diags)
+	}
+	if want := "type mismatch: time.timeZone expects a string without spaces"; diags[0].Message != want {
+		t.Errorf("message = %q, want %q", diags[0].Message, want)
+	}
+}
+
+func TestOptionTypeStringWithoutSpacesValid(t *testing.T) {
+	src := module(`  time.timeZone = "America/New_York";`)
+	if diags := optionTypeDiags(t, src); len(diags) != 0 {
+		t.Errorf("space-free timezone flagged: %+v", diags)
+	}
+}

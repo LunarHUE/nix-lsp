@@ -90,6 +90,10 @@ func (h *Handler) datasetCodeActions(ctx context.Context, fileID, uri string, re
 	var rich []datadiag.Diagnostic
 	if optionsIndex != nil {
 		rich = append(rich, datadiag.OptionDiagnostics(tree, optionsIndex)...)
+		// Enum type mismatches carry did-you-mean replacements (a legal value close
+		// to the wrong literal); the kind and string-constraint mismatches carry
+		// none and so add no action below.
+		rich = append(rich, datadiag.OptionTypeDiagnostics(tree, optionsIndex)...)
 	}
 	if packagesIndex != nil {
 		rich = append(rich, datadiag.PackageDiagnostics(tree, packagesIndex)...)

@@ -11,7 +11,7 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 )
 
-// loadOptionsIndex parses the shared options fixture (the same 20-entry file the
+// loadOptionsIndex parses the shared options fixture (the same 21-entry file the
 // server option tests use) into an index.
 func loadOptionsIndex(t *testing.T) *options.Index {
 	t.Helper()

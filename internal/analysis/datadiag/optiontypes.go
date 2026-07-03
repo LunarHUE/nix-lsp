@@ -1,10 +1,20 @@
 package datadiag
 
 import (
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/options"
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
+)
+
+// enumMessageLimit is the largest number of enum values named in full in a
+// mismatch message; a longer list shows enumMessageHead values plus ", ...".
+const (
+	enumMessageLimit = 6
+	enumMessageHead  = 5
 )
 
 // CodeOptionTypeMismatch marks a documented option whose bound value is a literal
@@ -37,33 +47,205 @@ func OptionTypeDiagnostics(tree *syntax.Tree, index *options.Index) []Diagnostic
 			// doc, or an unknown path): the type check has nothing to compare against.
 			continue
 		}
-		want, allowNull, ok := optionExpectedKind(doc.Type)
-		if !ok {
-			// A type this check does not map to a single literal kind: stay silent.
+		// Three checks in precedence order, each judging at most one binding. Their
+		// type domains are disjoint (a coarse kind, a string enum, a constrained
+		// string), so at most one ever fires, but the ordering keeps a kind
+		// mismatch (string where an integer belongs) ahead of a value check that
+		// would never see a non-string literal anyway.
+		if d, ok := kindMismatchDiagnostic(doc, b); ok {
+			out = append(out, d)
 			continue
 		}
-		got, ok := literalValueKind(b.value)
-		if !ok {
-			// Not a judgeable literal (reference, call, interpolated string, ...): skip.
+		if d, ok := enumValueDiagnostic(doc, b); ok {
+			out = append(out, d)
 			continue
 		}
-		if got == valueNull && allowNull {
+		if d, ok := stringConstraintDiagnostic(doc, b); ok {
+			out = append(out, d)
 			continue
 		}
-		if got == want {
-			continue
-		}
-		out = append(out, Diagnostic{
-			Diagnostic: syntax.Diagnostic{
-				Message:  "type mismatch: " + strings.Join(b.segs, ".") + " expects " + want.word() + ", got " + got.word(),
-				Range:    b.value.Range(),
-				Code:     CodeOptionTypeMismatch,
-				Severity: syntax.SeverityWarning,
-			},
-		})
 	}
 	sortByRange(out)
 	return out
+}
+
+// kindMismatchDiagnostic reports a binding whose literal value is of a coarse
+// kind (boolean, integer, list, ...) that cannot match the option's documented
+// type. It is the original type check, factored out so the enum and pattern
+// checks below can share the same per-binding loop. ok is false when the type
+// maps to no single kind, the value is not a judgeable literal, or the kinds
+// agree (including a null literal under a nullable type).
+func kindMismatchDiagnostic(doc *options.Doc, b moduleBinding) (Diagnostic, bool) {
+	want, allowNull, ok := optionExpectedKind(doc.Type)
+	if !ok {
+		return Diagnostic{}, false
+	}
+	got, ok := literalValueKind(b.value)
+	if !ok {
+		return Diagnostic{}, false
+	}
+	if got == valueNull && allowNull {
+		return Diagnostic{}, false
+	}
+	if got == want {
+		return Diagnostic{}, false
+	}
+	return Diagnostic{
+		Diagnostic: syntax.Diagnostic{
+			Message:  "type mismatch: " + strings.Join(b.segs, ".") + " expects " + want.word() + ", got " + got.word(),
+			Range:    b.value.Range(),
+			Code:     CodeOptionTypeMismatch,
+			Severity: syntax.SeverityWarning,
+		},
+	}, true
+}
+
+// enumValueDiagnostic reports a binding whose plain string literal is not one of
+// the legal values of an enum-typed option (`one of "a", "b", ...`, optionally
+// nullable). Only a documented string enum is judged; a non-string enum, a
+// non-string type, or a value that is not a plain (interpolation-free) string
+// literal is left alone. When the wrong literal sits within maxDistance edits of
+// a legal value, that value (quotes included) is offered as a did-you-mean
+// replacement for the flagged range, wired through datasetCodeActions exactly
+// like the unknown-option fix.
+func enumValueDiagnostic(doc *options.Doc, b moduleBinding) (Diagnostic, bool) {
+	values, _, ok := options.EnumValues(doc.Type)
+	if !ok {
+		return Diagnostic{}, false
+	}
+	content, r, ok := plainStringLiteral(b.value)
+	if !ok {
+		// A null literal, a reference, an interpolated string, ...: a nullable enum
+		// accepts null (judged as a kind, not here), and everything dynamic is
+		// deliberately never second-guessed.
+		return Diagnostic{}, false
+	}
+	if slices.Contains(values, content) {
+		return Diagnostic{}, false
+	}
+
+	var suggestions []string
+	for _, v := range values {
+		if levenshtein(content, v) <= maxDistance {
+			suggestions = append(suggestions, strconv.Quote(v))
+			if len(suggestions) == maxSuggestions {
+				break
+			}
+		}
+	}
+	return Diagnostic{
+		Diagnostic: syntax.Diagnostic{
+			Message:  "type mismatch: " + strings.Join(b.segs, ".") + " expects " + describeEnum(values) + "; got " + strconv.Quote(content),
+			Range:    r,
+			Code:     CodeOptionTypeMismatch,
+			Severity: syntax.SeverityWarning,
+		},
+		Suggestions: suggestions,
+	}, true
+}
+
+// stringConstraintDiagnostic reports a plain string literal that violates a
+// lightweight string-shape constraint carried in the option type: a `string
+// without spaces` that contains a space or tab, or a `string matching the pattern
+// <regex>` whose value does not match that regex anchored end to end. A `string
+// (with check: ...)` predicate is opaque and skipped, a regex Go cannot compile
+// is skipped, and an interpolated value is never a plain literal so never judged.
+// These constraints carry no did-you-mean fix, so the diagnostic has no
+// suggestions.
+func stringConstraintDiagnostic(doc *options.Doc, b moduleBinding) (Diagnostic, bool) {
+	content, r, ok := plainStringLiteral(b.value)
+	if !ok {
+		return Diagnostic{}, false
+	}
+	t := strings.TrimSpace(doc.Type)
+	if rest, found := strings.CutPrefix(t, "null or "); found {
+		t = strings.TrimSpace(rest)
+	}
+	if strings.HasPrefix(t, "string (with check:") {
+		// An arbitrary predicate the type only names, not describes: unjudgeable.
+		return Diagnostic{}, false
+	}
+	if strings.Contains(t, "string without spaces") {
+		if strings.ContainsAny(content, " \t") {
+			return stringConstraintDiag(b.segs, r, "expects a string without spaces"), true
+		}
+		return Diagnostic{}, false
+	}
+	if pat, found := strings.CutPrefix(t, "string matching the pattern "); found {
+		pat = strings.TrimSpace(pat)
+		// Anchor the pattern end to end, grouping so a top-level alternation binds
+		// under the anchors (^(?:a|b)$, not ^a|b$). A pattern Go's regexp cannot
+		// compile (a PCRE-only construct) yields no diagnostic rather than a wrong
+		// one.
+		re, err := regexp.Compile("^(?:" + pat + ")$")
+		if err != nil {
+			return Diagnostic{}, false
+		}
+		if !re.MatchString(content) {
+			return stringConstraintDiag(b.segs, r, "does not match the expected pattern "+pat), true
+		}
+	}
+	return Diagnostic{}, false
+}
+
+// stringConstraintDiag builds a suggestion-less string-constraint warning naming
+// the option path and the given expectation phrase.
+func stringConstraintDiag(segs []string, r syntax.Range, phrase string) Diagnostic {
+	return Diagnostic{
+		Diagnostic: syntax.Diagnostic{
+			Message:  "type mismatch: " + strings.Join(segs, ".") + " " + phrase,
+			Range:    r,
+			Code:     CodeOptionTypeMismatch,
+			Severity: syntax.SeverityWarning,
+		},
+	}
+}
+
+// describeEnum renders the legal-value phrase of an enum mismatch message:
+// `one of "a", "b", ...`. Up to enumMessageLimit values are named in full; a
+// longer list is truncated to enumMessageHead values followed by ", ..." so a
+// wide enum does not bloat the message.
+func describeEnum(values []string) string {
+	show := values
+	truncated := false
+	if len(values) > enumMessageLimit {
+		show = values[:enumMessageHead]
+		truncated = true
+	}
+	quoted := make([]string, 0, len(show))
+	for _, v := range show {
+		quoted = append(quoted, strconv.Quote(v))
+	}
+	out := "one of " + strings.Join(quoted, ", ")
+	if truncated {
+		out += ", ..."
+	}
+	return out
+}
+
+// plainStringLiteral returns the unquoted content and full source range of a
+// value that is a plain double-quoted string literal with no interpolation or
+// escape, unwrapping a single enclosing pair of parentheses. ok is false for an
+// indented string, an interpolated string, a string carrying an escape sequence,
+// or any non-string value, so the enum and pattern checks only ever judge a
+// literal they can read verbatim.
+func plainStringLiteral(node syntax.Node) (string, syntax.Range, bool) {
+	node = unwrapParensOnce(node)
+	if node.Kind() != "string_expression" {
+		return "", syntax.Range{}, false
+	}
+	if hasInterpolation(node) {
+		return "", syntax.Range{}, false
+	}
+	var b strings.Builder
+	for _, child := range node.NamedChildren() {
+		if child.Kind() != "string_fragment" {
+			// An escape_sequence (or anything but a plain fragment): not verbatim.
+			return "", syntax.Range{}, false
+		}
+		b.WriteString(child.Text())
+	}
+	return b.String(), node.Range(), true
 }
 
 // valueKind is the coarse literal kind the type check judges a value or expects

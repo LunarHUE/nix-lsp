@@ -22,8 +22,8 @@ func loadFixture(t *testing.T) *Index {
 
 func TestParseCount(t *testing.T) {
 	ix := loadFixture(t)
-	if got := ix.Len(); got != 20 {
-		t.Fatalf("Len = %d, want 20", got)
+	if got := ix.Len(); got != 21 {
+		t.Fatalf("Len = %d, want 21", got)
 	}
 }
 
@@ -341,6 +341,7 @@ func TestMarkdownForChannelNonPathStaysBackticked(t *testing.T) {
 	}
 	want := "**foo.bar**\n\n" +
 		"*Type:* `boolean`\n\n" +
+		"*No default — must be set when used.*\n\n" +
 		"*Declared in:* `/nix/store/abc-source/default.nix`"
 	if got := doc.MarkdownForChannel([]string{"foo", "bar"}, "nixos-25.05"); got != want {
 		t.Errorf("MarkdownForChannel mismatch:\n got:\n%s\nwant:\n%s", got, want)
@@ -396,5 +397,24 @@ func TestMarkdownGoldenNoExample(t *testing.T) {
 		"*Declared in:* `nixos/modules/services/networking/firewall.nix`"
 	if got := doc.Markdown(); got != want {
 		t.Errorf("Markdown mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestMarkdownGoldenNoDefault proves an option whose dataset entry carries no
+// default renders the must-be-set note where the Default block would sit.
+// system.stateVersion is a real such entry (users pin it, it has no default).
+func TestMarkdownGoldenNoDefault(t *testing.T) {
+	ix := loadFixture(t)
+	doc, ok := ix.Lookup([]string{"system", "stateVersion"})
+	if !ok {
+		t.Fatal("system.stateVersion not found")
+	}
+	got := doc.Markdown()
+	if !strings.Contains(got, "*No default — must be set when used.*") {
+		t.Errorf("Markdown missing no-default note:\n%s", got)
+	}
+	// The note stands in for the Default block, so no Default block is rendered.
+	if strings.Contains(got, "*Default:*") {
+		t.Errorf("Markdown carries a Default block for a defaultless option:\n%s", got)
 	}
 }

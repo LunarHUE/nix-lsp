@@ -49,6 +49,11 @@ const (
 	WithPkgsName
 	// LocalName completes a lexically visible binding name.
 	LocalName
+	// ValueString completes inside the string value of an option binding (an
+	// enum option's legal members). Prefix carries the option path, Partial the
+	// string content typed before the cursor, and Replace the content span inside
+	// the quotes.
+	ValueString
 )
 
 // String returns a stable label for a completion kind, used in tests.
@@ -62,6 +67,8 @@ func (k CompletionKind) String() string {
 		return "WithPkgsName"
 	case LocalName:
 		return "LocalName"
+	case ValueString:
+		return "ValueString"
 	default:
 		return "None"
 	}
@@ -93,6 +100,13 @@ func CompletionContextAt(file *File, tree *syntax.Tree, pos syntax.Position) (Co
 	}
 	content := tree.Content()
 	off := offsetAt(content, pos)
+
+	// A cursor inside the string value of an option binding completes that
+	// option's legal values. This is checked before the string/comment bail
+	// below, since the cursor is by definition inside a string here.
+	if cctx, ok := valueStringContext(tree, content, off); ok {
+		return cctx, true
+	}
 
 	// Strings and comments (but not interpolations) never take completion.
 	if inStringOrComment(tree, pos) {
@@ -329,6 +343,120 @@ func emptyAttrsetOptionContext(node syntax.Node, pos syntax.Position, replace sy
 		return CompletionContext{}, false
 	}
 	return cctx, true
+}
+
+// valueStringContext classifies a cursor sitting inside the string value of an
+// option binding, so the server can offer that option's legal enum members. It
+// handles both the closed literal (`PermitRootLogin = "pro|"`) and the mid-edit
+// unclosed quote (`PermitRootLogin = "pro|`), which tree-sitter leaves as an
+// ERROR wrapping the attrpath (and, once a fragment is typed, an identifier) with
+// no string node at all. Both shapes share one tell: the byte immediately before
+// the partial identifier run is the opening `"`, and to its left — across only
+// whitespace — sits the `=` of a binding whose attrpath assembles into an option
+// path. Prefix is that option path, Partial the content typed before the cursor,
+// and Replace the content span inside the quotes (up to the closing quote, or the
+// typed run's end when the quote is still open).
+func valueStringContext(tree *syntax.Tree, content []byte, off int) (CompletionContext, bool) {
+	// The partial identifier run ending at the cursor; its preceding byte must be
+	// the opening quote of the value string.
+	segStart := off
+	for segStart > 0 && isIdentContinue(content[segStart-1]) {
+		segStart--
+	}
+	if segStart == 0 || content[segStart-1] != '"' {
+		return CompletionContext{}, false
+	}
+	qOpen := segStart - 1
+
+	// The opening quote must belong to a binding VALUE: an `=` precedes it across
+	// only whitespace, and that `=` is an assignment, not part of a comparison
+	// operator (==, !=, <=, >=), whose left char would be another operator byte.
+	i := qOpen - 1
+	for i >= 0 && isSpaceByte(content[i]) {
+		i--
+	}
+	if i < 0 || content[i] != '=' {
+		return CompletionContext{}, false
+	}
+	if i > 0 {
+		switch content[i-1] {
+		case '=', '!', '<', '>':
+			return CompletionContext{}, false
+		}
+	}
+	j := i - 1
+	for j >= 0 && isSpaceByte(content[j]) {
+		j--
+	}
+	if j < 0 {
+		return CompletionContext{}, false
+	}
+
+	// The attrpath ends just past the last non-space byte before the `=`. Anchor
+	// back onto the CST to read its segments and assemble the full option path,
+	// crossing the same binding hops the empty-body completion does.
+	attrpath := attrpathEndingAt(tree, syntax.PositionAt(content, j+1))
+	if attrpath.IsZero() {
+		return CompletionContext{}, false
+	}
+	segs, ok := staticAttrpathSegments(attrpath)
+	if !ok {
+		return CompletionContext{}, false
+	}
+	var full []string
+	switch parent := attrpath.Parent(); parent.Kind() {
+	case "binding":
+		full, ok = assembleBindingPath(parent, attrpath, len(segs)-1)
+	case "ERROR":
+		// The unclosed quote defeated the binding; its attrpath survives inside an
+		// ERROR whose parent is the enclosing set, so recover enclosing bindings
+		// the same way the flattened path completion does.
+		full, ok = prependEnclosingBindings(segs, parent.Parent())
+	default:
+		return CompletionContext{}, false
+	}
+	if !ok {
+		return CompletionContext{}, false
+	}
+	if len(full) > 0 && full[0] == "config" {
+		full = full[1:]
+	}
+	if len(full) == 0 {
+		return CompletionContext{}, false
+	}
+
+	contentEnd := stringContentEnd(content, qOpen+1)
+	return CompletionContext{
+		Kind:    ValueString,
+		Prefix:  full,
+		Partial: string(content[qOpen+1 : off]),
+		Replace: syntax.Range{
+			Start: syntax.PositionAt(content, qOpen+1),
+			End:   syntax.PositionAt(content, contentEnd),
+		},
+	}, true
+}
+
+// attrpathEndingAt returns the attrpath node whose range ends exactly at pos, or
+// a zero node when the rightmost node ending there is not (inside) an attrpath.
+func attrpathEndingAt(tree *syntax.Tree, pos syntax.Position) syntax.Node {
+	n := nodeEndingAt(tree, pos)
+	for !n.IsZero() && n.Kind() != "attrpath" {
+		n = n.Parent()
+	}
+	return n
+}
+
+// stringContentEnd returns the byte offset that ends a string's inside-quotes
+// content beginning at start: the closing double quote, or — when the quote is
+// still open mid-edit — the first newline or end of buffer.
+func stringContentEnd(content []byte, start int) int {
+	for i := start; i < len(content); i++ {
+		if content[i] == '"' || content[i] == '\n' {
+			return i
+		}
+	}
+	return len(content)
 }
 
 // VisibleBindings returns the bindings lexically visible at pos, innermost scope

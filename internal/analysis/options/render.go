@@ -52,6 +52,10 @@ func (d *Doc) markdown(path []string, channel string) string {
 
 	if d.Default != "" {
 		blocks = append(blocks, renderValueBlock("Default", d.Default, d.DefaultIsMD))
+	} else {
+		// No documented default: the option must be assigned before it is read, so
+		// say so where the Default block would otherwise sit.
+		blocks = append(blocks, "*No default — must be set when used.*")
 	}
 	if d.Example != "" {
 		blocks = append(blocks, renderValueBlock("Example", d.Example, d.ExampleIsMD))

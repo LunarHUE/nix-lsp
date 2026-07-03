@@ -269,3 +269,63 @@ func TestVisibleBindings(t *testing.T) {
 		t.Fatalf("VisibleBindings unexpectedly included a builtin: %v", names)
 	}
 }
+
+// TestCompletionContextValueString covers the in-string value context that feeds
+// enum-value completion: a closed literal, the mid-edit unclosed quote, an empty
+// string, and the config-stripped path. Non-value strings must still decline.
+func TestCompletionContextValueString(t *testing.T) {
+	sshPath := []string{"services", "openssh", "settings", "PermitRootLogin"}
+	tests := []struct {
+		name        string
+		src         string
+		at          func(t *testing.T, s string) syntax.Position
+		wantOK      bool
+		wantPrefix  []string
+		wantPartial string
+		wantRange   string
+	}{
+		{"closed literal", `{ services.openssh.settings.PermitRootLogin = "pro"; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "pro", 0) },
+			true, sshPath, "pro", "pro"},
+		{"unclosed quote", "{ services.openssh.settings.PermitRootLogin = \"pro",
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "pro", 0) },
+			true, sshPath, "pro", "pro"},
+		{"empty string", `{ services.openssh.settings.PermitRootLogin = ""; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, `= "`, 0) },
+			true, sshPath, "", ""},
+		{"config stripped", `{ config.services.openssh.settings.PermitRootLogin = "y"; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, `= "`, 0) },
+			true, sshPath, "", "y"},
+		{"list element string not a value binding", `x = [ "pro" ]`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "pro", 0) },
+			false, nil, "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := parse(t, tc.src)
+			file := Analyze(tree)
+			pos := tc.at(t, tc.src)
+			got, ok := CompletionContextAt(file, tree, pos)
+			if !tc.wantOK {
+				// It may decline outright, or (never for these cases) classify
+				// something else; either way it must not be a ValueString here.
+				if ok && got.Kind == ValueString {
+					t.Fatalf("got ValueString (%+v), want non-value context", got)
+				}
+				return
+			}
+			if !ok || got.Kind != ValueString {
+				t.Fatalf("got (%+v, ok=%v), want ValueString", got, ok)
+			}
+			if !pathsEqual(got.Prefix, tc.wantPrefix) {
+				t.Fatalf("Prefix = %v, want %v", got.Prefix, tc.wantPrefix)
+			}
+			if got.Partial != tc.wantPartial {
+				t.Fatalf("Partial = %q, want %q", got.Partial, tc.wantPartial)
+			}
+			if txt := textAt(tc.src, got.Replace); txt != tc.wantRange {
+				t.Fatalf("Replace text = %q, want %q", txt, tc.wantRange)
+			}
+		})
+	}
+}

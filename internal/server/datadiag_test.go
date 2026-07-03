@@ -256,3 +256,36 @@ func TestDatasetRefreshOnLoadRepublishes(t *testing.T) {
 	handler.loadOptionsFromFile(optionsFixturePath(t))
 	waitForDiagnosticCode(t, handler, uri, datadiag.CodeUnknownOption)
 }
+
+func TestDatasetEnumMismatchDidYouMean(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	initWithDatasets(t, handler, t.TempDir(), optionsFixturePath(t), "")
+	uri := mustURI(t, "/tmp/mod.nix")
+	// "noo" is one edit from the legal "no", so a quoted did-you-mean is offered.
+	src := `{ config, ... }:
+{
+  services.openssh.settings.PermitRootLogin = "noo";
+}
+`
+	openDocument(t, handler, uri, src)
+
+	d := waitForDiagnosticCode(t, handler, uri, datadiag.CodeOptionTypeMismatch)
+	actions := requestCodeActions(t, handler, uri,
+		d.Range.Start.Line, d.Range.Start.Character, d.Range.End.Line, d.Range.End.Character, nil)
+	action := actionByTitle(t, actions, `Change to '"no"'`)
+	edits := action.Edit.Changes[uri]
+	if len(edits) != 1 {
+		t.Fatalf("got %d edits, want 1", len(edits))
+	}
+	got := applyEdits(t, src, edits)
+	want := `{ config, ... }:
+{
+  services.openssh.settings.PermitRootLogin = "no";
+}
+`
+	if got != want {
+		t.Errorf("applied edit =\n%q\nwant\n%q", got, want)
+	}
+}

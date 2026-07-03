@@ -508,3 +508,71 @@ func TestHandlerCompletionResolveNilIndexRoundTrips(t *testing.T) {
 		t.Errorf("resolved with nil index documentation = %+v, want nil (round-trip)", resolved.Documentation)
 	}
 }
+
+func TestHandlerCompletionValueStringEnum(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	src := `{ config, pkgs, ... }: { services.openssh.settings.PermitRootLogin = "pro"; }`
+	uri := completionModule(t, handler, src)
+
+	line, char := posAfter(t, src, `"pro`)
+	list := requestCompletionList(t, handler, uri, line, char)
+
+	item := itemByLabel(t, list, "prohibit-password")
+	if item.Kind != completionItemKindValue {
+		t.Errorf("kind = %d, want %d (Value)", item.Kind, completionItemKindValue)
+	}
+	if item.TextEdit == nil || item.TextEdit.NewText != "prohibit-password" {
+		t.Fatalf("TextEdit = %+v, want NewText prohibit-password", item.TextEdit)
+	}
+	// The replaced range is the inside-quotes content ("pro"), not the quotes.
+	proLine, proCol := posOf(t, src, "pro", 0)
+	r := item.TextEdit.Range
+	if r.Start.Line != proLine || r.Start.Character != proCol || r.End.Character != proCol+len("pro") {
+		t.Errorf("TextEdit range = %+v, want replace of %q at %d:%d", r, "pro", proLine, proCol)
+	}
+	// The fragment filters the list: only prohibit-password starts with "pro".
+	if got := listLabels(list); len(got) != 1 {
+		t.Errorf("labels = %v, want only prohibit-password", got)
+	}
+}
+
+func TestHandlerCompletionValueStringUnclosed(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	// Mid-edit: the quote is open and there is no closing quote or semicolon.
+	src := `{ config, pkgs, ... }: { services.openssh.settings.PermitRootLogin = "pro`
+	uri := completionModule(t, handler, src)
+
+	line, char := posAfter(t, src, `"pro`)
+	list := requestCompletionList(t, handler, uri, line, char)
+	itemByLabel(t, list, "prohibit-password")
+}
+
+func TestHandlerCompletionValueStringEmptyOffersAll(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	src := `{ config, pkgs, ... }: { services.openssh.settings.PermitRootLogin = ""; }`
+	uri := completionModule(t, handler, src)
+
+	line, char := posAfter(t, src, `= "`)
+	list := requestCompletionList(t, handler, uri, line, char)
+	if got := listLabels(list); len(got) != 5 {
+		t.Fatalf("labels = %v, want all 5 enum members", got)
+	}
+	itemByLabel(t, list, "yes")
+	itemByLabel(t, list, "no")
+}
+
+func TestHandlerCompletionValueStringNonEnumNull(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	// system.stateVersion is a plain string, not an enum: no value completion.
+	src := `{ config, pkgs, ... }: { system.stateVersion = "24"; }`
+	uri := completionModule(t, handler, src)
+
+	line, char := posAfter(t, src, `"24`)
+	if list := requestCompletionList(t, handler, uri, line, char); list != nil {
+		t.Fatalf("non-enum value completion = %v, want null", listLabels(list))
+	}
+}
