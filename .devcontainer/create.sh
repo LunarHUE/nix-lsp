@@ -25,6 +25,15 @@ mkdir -p "$HOME/.config/nix"
 append_once "$HOME/.config/nix/nix.conf" "experimental-features = nix-command flakes"
 append_once "$HOME/.config/nix/nix.conf" "warn-dirty = false"
 
+# Pressure-triggered GC for the unbounded shared /nix volume. During a nix build,
+# if free disk on the store's filesystem drops below min-free, Nix garbage-collects
+# until at least max-free is available, then continues. G suffixes are verified to
+# parse on Determinate Nix 3.21.1 (5G = 5368709120 B, 20G = 21474836480 B).
+# NOTE: this only fires *during* nix operations; it does NOT shrink the volume while
+# idle. Reclaiming space on demand is still a manual `nix store gc`.
+append_once "$HOME/.config/nix/nix.conf" "min-free = 5G"
+append_once "$HOME/.config/nix/nix.conf" "max-free = 20G"
+
 # Drop-in fallback: repos that don't commit a .envrc get one synthesized so
 # direnv auto-loads the flake devshell. Dormant in this repo (.envrc is committed).
 if [ ! -f "$WORKSPACE_DIR/.envrc" ] && [ -f "$WORKSPACE_DIR/flake.nix" ]; then

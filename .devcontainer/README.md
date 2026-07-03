@@ -16,6 +16,11 @@ ready-to-use Nix development environment. Reopen the repo in a container and —
   time, so the first terminal opens ready instead of building on demand.
 - **Nix-version drift warning.** `start.sh` warns loudly when the Nix pinned by the
   image disagrees with the Nix already living in the persistent `/nix` volume.
+- **Pressure-triggered store GC.** `create.sh` sets `min-free = 5G` / `max-free = 20G`
+  in `nix.conf`, so a build that pushes free disk below 5G garbage-collects up to 20G
+  free before continuing. This fires only *during* nix operations — it does not shrink
+  the `/nix` volume while idle, so `nix store gc` is still the tool for reclaiming space
+  on demand.
 
 If the repo has no committed `.envrc`, `create.sh` synthesizes one (`use flake`)
 automatically. If the repo already commits `.envrc`, it is left untouched.
