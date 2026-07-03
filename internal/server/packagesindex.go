@@ -119,12 +119,13 @@ func (h *Handler) loadPackagesAuto(ctx context.Context) {
 		logPackages("cache dir: %v", err)
 		return
 	}
-	cachePath := filepath.Join(cacheDir, "nixls", "packages", channel+".json")
+	// The filename carries the trimmed format version, so an old-format cache file
+	// left by a prior binary lives under a different name and is a miss here.
+	cachePath := filepath.Join(cacheDir, "nixls", "packages", packages.CacheFileName(channel))
 
-	if info, err := os.Stat(cachePath); err == nil && cacheFresh(info.ModTime(), time.Now(), packagesCacheTTL) {
-		if h.publishPackagesFromCache(cachePath) {
-			return
-		}
+	if ix, ok := freshPackagesCache(cachePath, time.Now()); ok {
+		h.storePackagesIndex(ix)
+		return
 	}
 
 	ix, err := h.downloadPackagesIndex(ctx, channel)
@@ -155,6 +156,28 @@ func (h *Handler) downloadPackagesIndex(ctx context.Context, channel string) (*p
 	}
 	defer cleanup()
 	return packages.ParseStream(r)
+}
+
+// freshPackagesCache reads and parses the trimmed cache file at path when it
+// exists and is within the TTL, returning the index on a hit. A missing file (in
+// particular an old-format file written under a different, versioned name after a
+// trimmedFormatVersion bump), a stale file, or an unparseable one is a miss, which
+// the caller resolves by re-downloading. It does no publishing, so it is a pure,
+// network-free seam.
+func freshPackagesCache(path string, now time.Time) (*packages.Index, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !cacheFresh(info.ModTime(), now, packagesCacheTTL) {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	ix, err := packages.ParseTrimmed(data)
+	if err != nil {
+		return nil, false
+	}
+	return ix, true
 }
 
 // publishPackagesFromCache parses the trimmed cache file at path and publishes the

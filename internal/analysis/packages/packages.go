@@ -247,8 +247,29 @@ func (ix *Index) Len() int {
 	return len(ix.docs)
 }
 
+// trimmedFormatVersion is the on-disk format version of the trimmed packages
+// cache. It is embedded in the cache filename by CacheFileName, so a binary that
+// changes the format writes and reads a differently named file: an old-format
+// file left by a prior binary is simply not found (a cache miss that re-downloads)
+// rather than being decoded — JSON's lenient decoding would otherwise accept a
+// stale trimmedDoc shape and serve silently wrong or blank data for the TTL.
+const trimmedFormatVersion = 2
+
+// CacheFileName returns the versioned cache filename for a channel's trimmed
+// packages dataset, e.g. "v2-nixos-unstable.json". The version prefix is what
+// makes an old-format cache file a miss after a trimmedFormatVersion bump.
+func CacheFileName(channel string) string {
+	return fmt.Sprintf("v%d-%s.json", trimmedFormatVersion, channel)
+}
+
 // trimmedDoc is the compact on-disk cache shape for one package: only the fields
 // hover renders, under short keys to keep the cache (tens of MB) small.
+//
+// This struct IS the trimmed cache format. Any field addition, rename, or removal
+// here changes what a cache file means, and JSON decodes old files leniently
+// (missing keys become zero values, renamed keys are silently ignored), so such a
+// change MUST bump trimmedFormatVersion above — otherwise a binary upgrade serves
+// wrong or blank hover data from a stale cache for up to the TTL.
 type trimmedDoc struct {
 	P string `json:"p,omitempty"`
 	V string `json:"v,omitempty"`

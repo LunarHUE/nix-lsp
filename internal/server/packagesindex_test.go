@@ -2,11 +2,86 @@ package server
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wesleybaldwin/nix-lsp/internal/analysis/packages"
 )
+
+// TestFreshPackagesCacheMissesUnversionedFile is the versioning regression guard:
+// a fresh trimmed cache file written by an older binary at the OLD, unversioned
+// path (<channel>.json) must NOT be read by the current binary. Because the cache
+// filename now embeds trimmedFormatVersion (packages.CacheFileName), the current
+// path is v2-<channel>.json, so the old file is a miss and the loader re-downloads
+// instead of decoding a possibly-incompatible trimmedDoc shape. Before the
+// versioned filename existed the two paths coincided and this file was a silent
+// hit, so this test failed.
+func TestFreshPackagesCacheMissesUnversionedFile(t *testing.T) {
+	dir := t.TempDir()
+	channel := "nixos-unstable"
+
+	// A v1-shaped trimmed cache at the old unversioned path, written "now" so
+	// freshness cannot be the reason for a miss.
+	oldPath := filepath.Join(dir, channel+".json")
+	writeFile(t, oldPath, `{"claude-code":{"p":"claude-code","v":"2.1.193"}}`)
+
+	curPath := filepath.Join(dir, packages.CacheFileName(channel))
+	if _, ok := freshPackagesCache(curPath, time.Now()); ok {
+		t.Fatalf("old-format cache at unversioned path %s was treated as a hit at current path %s; want a miss forcing re-download", oldPath, curPath)
+	}
+}
+
+// TestFreshPackagesCacheVersionedRoundTrip covers save -> load through the
+// versioned filename: marshalling the fixture index, writing it under
+// packages.CacheFileName, and reading it back with freshPackagesCache yields the
+// same index. This is the path loadPackagesAuto's own save (writeCacheFileAtomic
+// at the versioned cachePath) and fresh-cache load share.
+func TestFreshPackagesCacheVersionedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	channel := "nixos-unstable"
+
+	ix, err := loadRawFixtureIndex()
+	if err != nil {
+		t.Fatalf("load fixture index: %v", err)
+	}
+	trimmed, err := ix.MarshalTrimmed()
+	if err != nil {
+		t.Fatalf("MarshalTrimmed: %v", err)
+	}
+	cachePath := filepath.Join(dir, "nixls", "packages", packages.CacheFileName(channel))
+	if !strings.Contains(filepath.Base(cachePath), "v2-") {
+		t.Fatalf("cache filename %q missing version prefix", filepath.Base(cachePath))
+	}
+	if err := writeCacheFileAtomic(cachePath, trimmed); err != nil {
+		t.Fatalf("writeCacheFileAtomic: %v", err)
+	}
+
+	back, ok := freshPackagesCache(cachePath, time.Now())
+	if !ok {
+		t.Fatal("freshPackagesCache miss for a freshly written versioned cache, want hit")
+	}
+	if back.Len() != ix.Len() {
+		t.Errorf("round-trip Len = %d, want %d", back.Len(), ix.Len())
+	}
+	if doc, found := back.Lookup("claude-code"); !found || doc.Version != "2.1.193" {
+		t.Errorf("round-trip claude-code = %+v, want version 2.1.193", doc)
+	}
+}
+
+// loadRawFixtureIndex parses the shared RAW-shape packages.json fixture into an
+// Index without networking, for cache round-trip tests.
+func loadRawFixtureIndex() (*packages.Index, error) {
+	path := filepath.Join("..", "analysis", "packages", "testdata", "packages.fixture.json")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return packages.ParseStream(f)
+}
 
 // packagesFixturePath returns the absolute path to the RAW-shape packages.json
 // fixture (6 well-formed entries) used to load an index without networking.

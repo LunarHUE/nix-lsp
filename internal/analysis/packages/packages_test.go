@@ -119,6 +119,19 @@ func TestTrimmedRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCacheFileNameVersioned(t *testing.T) {
+	got := CacheFileName("nixos-unstable")
+	want := fmt.Sprintf("v%d-nixos-unstable.json", trimmedFormatVersion)
+	if got != want {
+		t.Fatalf("CacheFileName = %q, want %q", got, want)
+	}
+	// The version prefix is what turns an old-format file into a cache miss; guard
+	// against a regression to an unversioned name.
+	if got == "nixos-unstable.json" {
+		t.Fatal("CacheFileName is unversioned; a trimmedFormatVersion bump would not evict old caches")
+	}
+}
+
 func attrsOf(docs []*Doc) []string {
 	out := make([]string, len(docs))
 	for i, d := range docs {
