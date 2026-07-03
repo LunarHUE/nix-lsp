@@ -22,10 +22,6 @@ mkdir -p "$HOME/.config/nix"
 append_once "$HOME/.config/nix/nix.conf" "experimental-features = nix-command flakes"
 append_once "$HOME/.config/nix/nix.conf" "warn-dirty = false"
 
-if [ ! -f "$WORKSPACE_DIR/.envrc" ]; then
-  echo 'use flake' > "$WORKSPACE_DIR/.envrc" \
-    || echo "warning: could not write $WORKSPACE_DIR/.envrc; skipping direnv setup" >&2
-fi
 if [ -f "$WORKSPACE_DIR/.envrc" ]; then
   direnv allow "$WORKSPACE_DIR" \
     || echo "warning: 'direnv allow' failed; env will load once the flake is fixed" >&2

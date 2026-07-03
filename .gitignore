@@ -11,7 +11,6 @@ coverage.out
 .direnv/
 .cache/
 
-.envrc
 node_modules
 
 # Built server binary and compiled dev-client output
