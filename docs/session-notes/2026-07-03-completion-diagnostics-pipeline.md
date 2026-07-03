@@ -76,3 +76,34 @@ boundary warnings prevent cross-fixing) → Fable line-reviews, re-runs the
 serial gate, commits explicit paths, one-line messages. CHANGELOG.md updated
 with every user-visible commit. Two prior parallel-session collisions are
 documented in the 2026-07-02 note — check HEAD before/after committing.
+
+## Addendum — second half of 2026-07-03 (overnight)
+
+Shipped, newest first: `82c29ce` enum/pattern value checks + in-string enum
+completion + no-default hover note (options/typestring.go is the shared
+enum parser); `8d7ca64` git-index state as a memo input + `.git/index`
+watcher (terminal git add now clears untracked warnings — the token is a
+stat, refreshed at discovery/watched-refresh/coalescer-exec); `e815ce9`
+41-name shell-attr trigger list + first-binding-desync fix (name moved to a
+LOOKBEHIND so the host keeps its attrset disambiguation) + second injection
+grammar (L:meta.embedded.block.shellscript) for Nix interpolation inside
+shell strings; `eff443d`/`4e2b151` read-loop wedge fix (TrySubmit +
+diagcoalesce.go per-URI dirty-bit coalescing — Submit on the notification
+path could block the read loop and freeze the server) merged with the
+syntax round: swallowed-binding missing-';' anchoring ("missing ';' before
+'corePackages'"), anonymous-MISSING-token surfacing (expected ';'/'}'/']'),
+unclosed-delimiter classification, generic-shadow dedupe, unknown-option
+near-miss gate (options.json lacks internal/invisible options — see
+system.disableInstallerTools), the user's appliance module as a permanent
+zero-diagnostics fixture, and empty-attrset-body option completion.
+
+Process notes: two agent connection-drops recovered by SendMessage resume
+(one crashed BEFORE reporting but AFTER writing all files — audit the tree
+before assuming loss); user authorized a two-line combined commit when two
+agents' trees interleaved. The user live-tests features in
+examples/nixos/configuration.nix — expect uncommitted edits there.
+
+Open threads: fish-init attrs get bash coloring (documented approximation);
+tzdata-style value sets remain unknowable statically; extension still named
+nixls-dev-client (rename before marketplace publish); Windows CI job is
+non-nix by necessity.
