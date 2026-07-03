@@ -83,6 +83,64 @@ func TestSchedulerStopDrainsQueuedWork(t *testing.T) {
 	}
 }
 
+// TestTrySubmitReportsQueueFullWithoutBlocking is the unit-level guard for the
+// stuck-diagnostics freeze: with a lane queue full and no worker draining it,
+// TrySubmit must return immediately (never block) and report the overflow, where
+// the blocking Submit would park the caller forever. A parked caller on the LSP
+// read loop is exactly what wedged the whole server before this fix.
+func TestTrySubmitReportsQueueFullWithoutBlocking(t *testing.T) {
+	scheduler := NewScheduler(4) // queue cap 4, workers never started so nothing drains
+	defer scheduler.Stop()
+
+	noop := func(context.Context) error { return nil }
+	for range 4 {
+		if _, ok := scheduler.TrySubmit(context.Background(), LaneBackground, noop); !ok {
+			t.Fatal("TrySubmit reported full before the queue was filled")
+		}
+	}
+
+	done := make(chan TaskResult, 1)
+	go func() {
+		result, ok := scheduler.TrySubmit(context.Background(), LaneBackground, noop)
+		if ok {
+			t.Errorf("TrySubmit ok = true on a full queue, want false")
+		}
+		done <- <-result
+	}()
+
+	select {
+	case got := <-done:
+		if !errors.Is(got.Err, ErrQueueFull) {
+			t.Fatalf("err = %v, want ErrQueueFull", got.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TrySubmit blocked on a full queue; it must be non-blocking")
+	}
+}
+
+// TestTrySubmitEnqueuesAndRunsWhenRoomAvailable confirms the accepted path still
+// runs the task and delivers its result.
+func TestTrySubmitEnqueuesAndRunsWhenRoomAvailable(t *testing.T) {
+	scheduler := NewScheduler(4)
+	scheduler.Start(context.Background(), 1)
+	defer scheduler.Stop()
+
+	ran := make(chan struct{})
+	result, ok := scheduler.TrySubmit(context.Background(), LaneBackground, func(context.Context) error {
+		close(ran)
+		return nil
+	})
+	if !ok {
+		t.Fatal("TrySubmit ok = false with an empty queue, want true")
+	}
+	mustResult(t, result)
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("task did not run")
+	}
+}
+
 func mustResult(t *testing.T, result <-chan TaskResult) {
 	t.Helper()
 	select {

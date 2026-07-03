@@ -166,6 +166,37 @@ func TestDatasetOptionTypeMismatchPublished(t *testing.T) {
 	}
 }
 
+func TestDatasetUserRealModuleNoDiagnostics(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	initWithDatasets(t, handler, t.TempDir(), optionsFixturePath(t), "")
+	uri := mustURI(t, "/tmp/real-module.nix")
+	// A user's real minimal-profile module, verbatim: an interpolated import, a
+	// real-but-undocumented option (system.disableInstallerTools is declared
+	// internal and absent from options.json while its sibling stateVersion is
+	// present), a freeform nix.settings leaf descent, and a lib.mkDefault value.
+	// The module gate arms via the >=2 exact-hits path (no config formal), and
+	// every conservative rule must hold: zero diagnostics of any kind.
+	src := `{ modulesPath, lib, ... }:
+{
+  imports = [
+    "${modulesPath}/profiles/minimal.nix"
+  ];
+  system.disableInstallerTools = true;
+  boot.initrd.systemd.enable = true;
+  boot.loader.systemd-boot.configurationLimit = lib.mkDefault 2;
+  nix.settings.auto-optimise-store = true;
+}
+`
+	openDocument(t, handler, uri, src)
+	// Let background diagnostics settle, then assert nothing was published.
+	time.Sleep(200 * time.Millisecond)
+	if diags := handler.Diagnostics(uri); len(diags) != 0 {
+		t.Fatalf("diagnostics = %+v, want none", diags)
+	}
+}
+
 func TestDatasetSyntaxErrorOptionGuidancePublished(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()

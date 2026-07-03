@@ -22,8 +22,8 @@ func loadFixture(t *testing.T) *Index {
 
 func TestParseCount(t *testing.T) {
 	ix := loadFixture(t)
-	if got := ix.Len(); got != 17 {
-		t.Fatalf("Len = %d, want 17", got)
+	if got := ix.Len(); got != 20 {
+		t.Fatalf("Len = %d, want 20", got)
 	}
 }
 
@@ -206,7 +206,7 @@ func TestChildrenTopLevel(t *testing.T) {
 	for _, c := range children {
 		names = append(names, c.Name)
 	}
-	want := []string{"boot", "environment", "networking", "nix", "services", "systemd", "time", "users"}
+	want := []string{"boot", "environment", "networking", "nix", "services", "system", "systemd", "time", "users"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("Children(nil) names = %v, want %v", names, want)
 	}

@@ -6,7 +6,7 @@
 // published set rather than memoized. Both are the first diagnostics that can put
 // a squiggle on otherwise-valid Nix, so every rule below bends toward silence: a
 // path that does not clearly reach a known namespace, a wildcard instance segment,
-// anything dynamic, or a package with no near-miss suggestion is left alone.
+// anything dynamic, or an unknown name with no near-miss suggestion is left alone.
 package datadiag
 
 import (
@@ -28,8 +28,9 @@ const (
 // Diagnostic is a dataset diagnostic enriched with the ordered did-you-mean
 // suggestions for its flagged range, so the server can both publish the plain
 // syntax.Diagnostic and build one quick fix per suggestion (matching by code and
-// range, exactly as the flake follows fix does). Suggestions may be empty for an
-// unknown-option; an unknown-package is only ever emitted with at least one.
+// range, exactly as the flake follows fix does). An unknown-option and an
+// unknown-package are only ever emitted with at least one suggestion; an
+// option-type-mismatch carries none.
 type Diagnostic struct {
 	syntax.Diagnostic
 	// Suggestions are the replacement texts for the flagged range, best (smallest

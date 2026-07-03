@@ -126,6 +126,17 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Fixed — 2026-07-03
 
+- **Frozen diagnostics requiring a restart**: bursts of edits could fill the
+  background task queue, and the blocking submit then wedged the LSP read
+  loop itself — freezing every feature with stale errors stuck on screen.
+  Diagnostics recomputes are now coalesced per file (only the newest buffer
+  matters) and the notification path never blocks, so heavy typing always
+  converges to the current content.
+- **`unknown-option` false positive on hidden options** (in progress this
+  commit, finalized in the next): real options declared `internal`/invisible
+  are absent from the docs dataset (e.g. `system.disableInstallerTools`);
+  the warning now requires a near-miss did-you-mean suggestion to fire.
+
 - Completion now fires on trailing dots at any depth (`networking.firewall.`,
   nested attrsets, `config.`-prefixed paths, quoted segments like
   `services."my-svc".`) — previously only a single-segment trailing dot

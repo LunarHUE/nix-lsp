@@ -11,7 +11,7 @@ import (
 )
 
 // optionsFixturePath returns the absolute path to the shared decompressed
-// options.json fixture (17 entries) used to load an index without networking.
+// options.json fixture (20 entries) used to load an index without networking.
 func optionsFixturePath(t *testing.T) string {
 	t.Helper()
 	path, err := filepath.Abs(filepath.Join("..", "analysis", "options", "testdata", "options.fixture.json"))
@@ -50,8 +50,8 @@ func TestOptionsLoadFromFixture(t *testing.T) {
 	if index == nil {
 		t.Fatal("optionsSnapshot = nil, want loaded index")
 	}
-	if got := index.Len(); got != 17 {
-		t.Errorf("index.Len() = %d, want 17", got)
+	if got := index.Len(); got != 20 {
+		t.Errorf("index.Len() = %d, want 20", got)
 	}
 }
 

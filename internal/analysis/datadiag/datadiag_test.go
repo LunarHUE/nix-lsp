@@ -11,7 +11,7 @@ import (
 	"github.com/wesleybaldwin/nix-lsp/internal/syntax"
 )
 
-// loadOptionsIndex parses the shared options fixture (the same 17-entry file the
+// loadOptionsIndex parses the shared options fixture (the same 20-entry file the
 // server option tests use) into an index.
 func loadOptionsIndex(t *testing.T) *options.Index {
 	t.Helper()
@@ -236,23 +236,70 @@ func TestOptionOneDiagnosticPerPath(t *testing.T) {
 	}
 }
 
-func TestOptionUnknownWithoutSuggestion(t *testing.T) {
-	// A group typo with no child within edit distance 2 still warns, but with no
-	// did-you-mean clause.
-	src := `{ config, ... }:
+func TestOptionUnknownWithoutSuggestionSilent(t *testing.T) {
+	// An unknown child of a known group with NO sibling within edit distance 2
+	// stays silent: the dataset only carries documented options, and NixOS
+	// declares some real options internal/invisible (system.disableInstallerTools
+	// is absent from the channel options.json while its siblings are present), so
+	// a far-from-everything name is more likely such a hidden real option than a
+	// typo. The same shape against the fixture: `disableInstallerTools` under the
+	// known `networking` group, nowhere near `firewall` or `wireguard`.
+	tests := []string{
+		`{ config, ... }:
+{
+  networking.disableInstallerTools = true;
+}
+`,
+		// The original suggestion-less case: a group typo with no near child.
+		`{ config, ... }:
 {
   boot.loxxxxxx.enable = true;
 }
+`,
+	}
+	for _, src := range tests {
+		if diags := optionDiags(t, src); len(diags) != 0 {
+			t.Errorf("got %d diagnostics for %q, want 0 (no near-miss sibling): %+v", len(diags), src, diags)
+		}
+	}
+}
+
+// userRealModule is a user's real minimal-profile module, verbatim. It distills
+// every conservative rule into one fixture: an interpolated import (skipped
+// namespace), a real-but-undocumented option (system.disableInstallerTools is
+// declared internal, so it is absent from options.json while its sibling
+// stateVersion is present), a freeform-leaf descent (nix.settings.*), and a
+// lib.mkDefault value the type check must skip. It must produce ZERO dataset
+// diagnostics — with the module gate ARMED, not failed.
+const userRealModule = `{ modulesPath, lib, ... }:
+{
+  imports = [
+    "${modulesPath}/profiles/minimal.nix"
+  ];
+  system.disableInstallerTools = true;
+  boot.initrd.systemd.enable = true;
+  boot.loader.systemd-boot.configurationLimit = lib.mkDefault 2;
+  nix.settings.auto-optimise-store = true;
+}
 `
-	diags := optionDiags(t, src)
-	if len(diags) != 1 {
-		t.Fatalf("got %d diagnostics, want 1: %+v", len(diags), diags)
+
+func TestOptionUserRealModuleSilent(t *testing.T) {
+	tree := mustParse(t, userRealModule)
+	index := loadOptionsIndex(t)
+
+	// The file has no config formal, so the gate must arm via the >=2
+	// exact-documented-hits path (boot.initrd.systemd.enable and
+	// boot.loader.systemd-boot.configurationLimit resolve exactly). Assert the
+	// gate is genuinely armed so the zero-diagnostics assertions below prove the
+	// conservative rules, not a failed gate.
+	if _, gated := gatherModuleBindings(tree, index); !gated {
+		t.Fatal("module gate did not arm; the silence assertions would be vacuous")
 	}
-	if want := "unknown option: boot.loxxxxxx"; diags[0].Message != want {
-		t.Errorf("message = %q, want %q", diags[0].Message, want)
+	if diags := OptionDiagnostics(tree, index); len(diags) != 0 {
+		t.Errorf("OptionDiagnostics = %+v, want none", diags)
 	}
-	if len(diags[0].Suggestions) != 0 {
-		t.Errorf("suggestions = %v, want none", diags[0].Suggestions)
+	if diags := OptionTypeDiagnostics(tree, index); len(diags) != 0 {
+		t.Errorf("OptionTypeDiagnostics = %+v, want none", diags)
 	}
 }
 

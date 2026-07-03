@@ -128,9 +128,11 @@ func TestSyntaxErrorHints(t *testing.T) {
 			want: "syntax error: attribute 'wg0' has no value (expected 'wg0 = <value>;')",
 		},
 		{
+			// A deleted `;` makes the parser swallow the next binding's name into
+			// the first binding's value; the hint names the swallowed identifier.
 			name: "missing semicolon between bindings",
 			src:  "{ foo = 1 bar = 2; }",
-			want: "syntax error: missing ';' after binding",
+			want: "syntax error: missing ';' before 'bar'",
 		},
 		{
 			// A set's last binding missing its `;` leaves an anonymous zero-width
@@ -200,17 +202,153 @@ func TestSyntaxErrorHintsUserExactSnippet(t *testing.T) {
 }
 
 // TestSyntaxErrorHintsUserExactSnippetTopLevel runs the same buffer as a whole
-// file (no module wrapper): recovery differs (the outer `};` is swallowed and a
-// stray `}` ERROR lands inside the binding), but every message must still be the
-// missing-';' hint or the generic one — never a name-bearing hint.
+// file (no module wrapper): recovery differs (the outer `};` is swallowed, a
+// stray `}` ERROR lands inside the binding, and the outer set's own `}` goes
+// missing), but every message must still be a missing-';', expected-token, or
+// generic one — never a name-bearing hint.
 func TestSyntaxErrorHintsUserExactSnippetTopLevel(t *testing.T) {
 	diagnostics := parse(t, userExactSnippet+"\n").Diagnostics()
 	if len(diagnostics) == 0 {
 		t.Fatal("diagnostics = none, want syntax errors (invalid at top level)")
 	}
+	allowed := map[string]bool{
+		"syntax error": true,
+		"syntax error: missing ';' after binding": true,
+		"syntax error: expected '}'":              true,
+	}
 	for _, d := range diagnostics {
-		if d.Message != "syntax error" && d.Message != "syntax error: missing ';' after binding" {
-			t.Errorf("message = %q, want the generic or the missing-';' message", d.Message)
+		if !allowed[d.Message] {
+			t.Errorf("message = %q, want a missing-';', expected-token, or generic message", d.Message)
+		}
+	}
+}
+
+// userLetSnippet is the verbatim let-binding buffer from the wrong-anchor
+// report: the `;` after the `pkgs = import nixpkgs { ... }` binding is deleted,
+// which makes the parser swallow `corePackages` into the pkgs value.
+const userLetSnippet = "let\n" +
+	"  pkgs = import nixpkgs {\n" +
+	"    inherit system;\n" +
+	"    config.allowUnfree = true;\n" +
+	"    overlays = [ claude-code.overlays.default ];\n" +
+	"  }\n" +
+	"  corePackages = with pkgs; [\n" +
+	"    nixpkgs-fmt\n" +
+	"    deadnix\n" +
+	"  ];\n" +
+	"in corePackages\n"
+
+// TestSyntaxErrorHintsSwallowedLetBinding is the regression for the
+// wrong-anchor report: the missing-';' diagnostic must name the swallowed
+// identifier and anchor at the end of the real value (the `}` line), never on a
+// later line, and exactly one missing-';' diagnostic must describe the mistake.
+func TestSyntaxErrorHintsSwallowedLetBinding(t *testing.T) {
+	diagnostics := parse(t, userLetSnippet).Diagnostics()
+	want := "syntax error: missing ';' before 'corePackages'"
+	var hits []syntax.Diagnostic
+	for _, d := range diagnostics {
+		if strings.Contains(d.Message, "missing ';'") {
+			hits = append(hits, d)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("missing-';' diagnostics = %+v, want exactly one", hits)
+	}
+	d := hits[0]
+	if d.Message != want {
+		t.Errorf("message = %q, want %q", d.Message, want)
+	}
+	// The `}` closing the pkgs value is on line 5; corePackages is on line 6.
+	// The anchor must be zero-width at the end of the value, not on the
+	// corePackages/with line or anywhere later.
+	if d.Range.Start != d.Range.End {
+		t.Errorf("range = %+v, want zero-width", d.Range)
+	}
+	if d.Range.Start.Line != 5 || d.Range.Start.Character != 3 {
+		t.Errorf("anchor = %+v, want line 5 char 3 (end of the '}' value)", d.Range.Start)
+	}
+}
+
+// TestSyntaxErrorHintsSwallowedBindingVariants covers the swallow recovery
+// across binding sites and value shapes: let and attrset bindings, values
+// ending in `}` / `]` / a function application, a swallowed multi-segment
+// attrpath (named by its first token), and the mistake being independent of
+// whether sibling bindings follow.
+func TestSyntaxErrorHintsSwallowedBindingVariants(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"let value ends in bracket", "let\n  a = [ 1 2 ]\n  b = 3;\nin a\n",
+			"syntax error: missing ';' before 'b'"},
+		{"let value is application", "let\n  a = f x\n  b = 3;\nin a\n",
+			"syntax error: missing ';' before 'b'"},
+		{"attrset value ends in brace", "{\n  a = { x = 1; }\n  b = 3;\n}\n",
+			"syntax error: missing ';' before 'b'"},
+		{"swallowed multi-segment attrpath", "{\n  a = { x = 1; }\n  b.c = 3;\n}\n",
+			"syntax error: missing ';' before 'b'"},
+		{"no sibling after the swallowed binding", "let\n  a = [ 1 2 ]\n  b = 3;\nin a\n",
+			"syntax error: missing ';' before 'b'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			found := false
+			for _, d := range parse(t, tc.src).Diagnostics() {
+				if d.Message == tc.want {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("no diagnostic with message %q; got %+v", tc.want, parse(t, tc.src).Diagnostics())
+			}
+		})
+	}
+}
+
+// TestSyntaxExpectedTokenMessages asserts anonymous MISSING tokens surface as
+// precise expected-token diagnostics, unclosed-delimiter ERROR recoveries are
+// classified, and a named MISSING node reports its expected kind.
+func TestSyntaxExpectedTokenMessages(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"unclosed attrset", "{ foo = 1;", "syntax error: expected '}'"},
+		{"unclosed list", "[ 1 2", "syntax error: expected ']'"},
+		{"unclosed parens", "( 1 + 2", "syntax error: expected ')'"},
+		{"lone open brace", "{", "syntax error: unclosed '{' (expected '}')"},
+		{"lone open bracket", "[", "syntax error: unclosed '[' (expected ']')"},
+		{"lone open paren", "(", "syntax error: unclosed '(' (expected ')')"},
+		{"unterminated string", "\"abc", "syntax error: unclosed '\"' (expected '\"')"},
+		{"missing value", "{ x = ;}", "syntax error: expected identifier"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics := parse(t, tc.src).Diagnostics()
+			found := false
+			for _, d := range diagnostics {
+				if d.Message == tc.want {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("no diagnostic with message %q; got %+v", tc.want, diagnostics)
+			}
+		})
+	}
+}
+
+// TestSyntaxGenericShadowedByPrecise asserts the dedupe: when a precise
+// expected-token or classified diagnostic sits inside a broad generic ERROR
+// region, the generic diagnostic is dropped and only precise messages remain.
+func TestSyntaxGenericShadowedByPrecise(t *testing.T) {
+	// The user's let snippet wraps the swallowed-binding ERROR inside a broad
+	// generic ERROR spanning the whole let head; the generic must be gone.
+	for _, d := range parse(t, userLetSnippet).Diagnostics() {
+		if d.Message == "syntax error" && d.Range.Start.Line == 0 {
+			t.Errorf("broad generic ERROR survived dedupe: %+v", d)
 		}
 	}
 }

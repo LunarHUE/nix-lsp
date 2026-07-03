@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/datadiag"
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/facts"
@@ -138,10 +140,17 @@ func (h *Handler) refreshOpenDiagnostics() {
 	if len(open) == 0 {
 		return
 	}
-	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+	// Non-blocking: this fires from a dataset-load goroutine, so a blocking Submit
+	// on a full queue would park that loader for no benefit. A dropped refresh
+	// (queue full) is logged, not lost silently: the diagnostics still gain their
+	// dataset warnings on the next edit through the coalescer, and a later dataset
+	// load re-arms this path. Overflow is not reachable in practice (coarse tasks).
+	if _, ok := h.tasks.TrySubmit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
 		for _, file := range open {
 			_ = h.computeFileDiagnostics(ctx, snapshot, file.uri, file.path, h.nextGeneration(), false)
 		}
 		return nil
-	})
+	}); !ok {
+		fmt.Fprintln(os.Stderr, "nix-lsp: dropped open-diagnostics refresh (scheduler queue full)")
+	}
 }

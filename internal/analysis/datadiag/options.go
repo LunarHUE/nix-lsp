@@ -25,7 +25,10 @@ var firstSegmentSkip = map[string]bool{
 // full paths, exactly like option hover's assembly but file-wide), strips one
 // leading `config`, skips module-machinery and dynamic paths, and walks each into
 // the option trie, emitting at most one diagnostic per path on the first segment
-// that names no child of a known option group. A nil tree or index yields none.
+// that names no child of a known option group — and only when a near-miss
+// sibling exists to suggest, so a real-but-undocumented option (declared
+// internal/invisible, hence absent from options.json) is never flagged. A nil
+// tree or index yields none.
 func OptionDiagnostics(tree *syntax.Tree, index *options.Index) []Diagnostic {
 	if tree == nil || index == nil {
 		return nil
@@ -177,21 +180,30 @@ func descendOption(root options.Cursor, segs []string, ranges []syntax.Range) (D
 			// Not an interior group with concrete children: nothing to compare against.
 			return Diagnostic{}, false
 		}
-		return buildOptionDiagnostic(segs[:i+1], ranges[i], seg, names), true
+		suggestions := suggest(seg, names)
+		if len(suggestions) == 0 {
+			// No near-miss sibling: the channel options.json only carries DOCUMENTED
+			// options, and NixOS declares some real ones with internal/invisible
+			// flags (system.disableInstallerTools is absent while its siblings are
+			// present). A genuine typo is by definition within a couple of edits of
+			// a real documented sibling; an unknown segment this far from every
+			// child is more likely a dataset-hidden real option than a typo, so
+			// stay silent — exactly the gate the package check applies.
+			return Diagnostic{}, false
+		}
+		return buildOptionDiagnostic(segs[:i+1], ranges[i], suggestions), true
 	}
 	// The whole path landed on a node (a group or a leaf): not an unknown option.
 	return Diagnostic{}, false
 }
 
 // buildOptionDiagnostic assembles the warning for an unknown option segment: the
-// message names the path so far and, when a close child exists, the best
-// suggestion; Suggestions carries all offered replacements for the quick fix.
-func buildOptionDiagnostic(pathSoFar []string, r syntax.Range, seg string, childNames []string) Diagnostic {
-	suggestions := suggest(seg, childNames)
-	message := "unknown option: " + strings.Join(pathSoFar, ".")
-	if len(suggestions) > 0 {
-		message += " (did you mean " + suggestions[0] + "?)"
-	}
+// message names the path so far and the best suggestion (the near-miss gate in
+// descendOption guarantees at least one); Suggestions carries all offered
+// replacements for the quick fix.
+func buildOptionDiagnostic(pathSoFar []string, r syntax.Range, suggestions []string) Diagnostic {
+	message := "unknown option: " + strings.Join(pathSoFar, ".") +
+		" (did you mean " + suggestions[0] + "?)"
 	return Diagnostic{
 		Diagnostic: syntax.Diagnostic{
 			Message:  message,

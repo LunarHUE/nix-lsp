@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -37,6 +38,7 @@ type Handler struct {
 	tasks     *lsp.Scheduler
 	memo      *memo.Engine
 	publisher *diagnosticsPublisher
+	diag      *diagScheduler
 
 	mu             sync.RWMutex
 	diagnostics    map[string][]syntax.Diagnostic
@@ -131,8 +133,21 @@ func NewHandler() *Handler {
 		diagGeneration: make(map[string]uint64),
 	}
 	handler.optionsCtx, handler.optionsCancel = context.WithCancel(context.Background())
+	handler.diag = newDiagScheduler(handler.enqueueBackground, handler.runFileDiagnostics)
 	handler.tasks.Start(context.Background(), 2)
 	return handler
+}
+
+// enqueueBackground submits run on the background lane without blocking, so a
+// full queue can never park a notification-path caller (and thus the LSP read
+// loop). It reports whether a worker will run the task; the diagnostics coalescer
+// re-arms on a false (queue-full) return.
+func (h *Handler) enqueueBackground(run func(context.Context)) bool {
+	_, ok := h.tasks.TrySubmit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+		run(ctx)
+		return nil
+	})
+	return ok
 }
 
 // SetNotifier attaches the LSP notification sink. The publisher owns
@@ -287,6 +302,9 @@ func (h *Handler) startWorkspaceDiscovery(params json.RawMessage) {
 	h.workspaceDone = done
 	h.mu.Unlock()
 
+	// Runs off the read loop (initialize is a request, dispatched on its own
+	// goroutine) and must not be dropped: it is the one initial workspace index.
+	// A blocking Submit is safe here because the queue is empty at initialize.
 	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
 		h.mu.RLock()
 		caller := h.caller
@@ -517,9 +535,16 @@ func (h *Handler) didChangeWatchedFiles(params json.RawMessage) error {
 	root := h.workspace.Root
 	h.mu.RUnlock()
 
-	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
+	// This runs synchronously on the LSP read loop, so it must never block: use
+	// the non-blocking submit. A dropped refresh (queue full) is logged rather
+	// than lost silently; open-buffer diagnostics keep flowing through the
+	// coalescer, and the next watched-files/edit event re-triggers the refresh.
+	// Overflow is not reachable in practice because background tasks are coarse.
+	if _, ok := h.tasks.TrySubmit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
 		return h.refreshWatchedFiles(ctx, root, changes)
-	})
+	}); !ok {
+		fmt.Fprintln(os.Stderr, "nix-lsp: dropped watched-files refresh (scheduler queue full)")
+	}
 	return nil
 }
 
@@ -659,7 +684,9 @@ func (h *Handler) executeCommand(_ context.Context, params json.RawMessage) (any
 	}
 
 	// Re-discovery picks up the newly-tracked file; refreshWatchedFiles then
-	// recomputes the open files, clearing their untracked-import warnings.
+	// recomputes the open files, clearing their untracked-import warnings. This
+	// runs off the read loop (executeCommand is a request) and must not be dropped,
+	// so a blocking Submit is acceptable here.
 	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
 		return h.refreshWatchedFiles(ctx, root, nil)
 	})
@@ -680,12 +707,24 @@ func withinRoot(root, path string) bool {
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
+// scheduleFileDiagnostics requests a diagnostics recompute for an open document
+// after a didOpen/didChange. It routes through the per-URI coalescer so a burst
+// of keystrokes collapses to a single in-flight recompute (converging to the
+// latest buffer) and never enqueues per-keystroke work that could fill the
+// background queue. It is called synchronously on the LSP read loop, so it must
+// never block — the coalescer's schedule is non-blocking.
 func (h *Handler) scheduleFileDiagnostics(uri string, path string, debounce bool) {
+	h.diag.schedule(uri, path, debounce)
+}
+
+// runFileDiagnostics is the coalescer's exec: it takes a fresh generation and VFS
+// snapshot at run time (so it reflects the newest buffer, not the buffer at the
+// time the recompute was requested) and computes and publishes diagnostics for
+// the URI.
+func (h *Handler) runFileDiagnostics(ctx context.Context, uri, path string, debounce bool) {
 	generation := h.nextGeneration()
 	snapshot := h.vfs.Snapshot()
-	h.tasks.Submit(context.Background(), lsp.LaneBackground, func(ctx context.Context) error {
-		return h.computeFileDiagnostics(ctx, snapshot, uri, path, generation, debounce)
-	})
+	_ = h.computeFileDiagnostics(ctx, snapshot, uri, path, generation, debounce)
 }
 
 func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snapshot, uri string, path string, generation uint64, debounce bool) error {

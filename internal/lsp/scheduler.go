@@ -24,6 +24,13 @@ const (
 // ErrSchedulerStopped is returned when work is submitted after shutdown.
 var ErrSchedulerStopped = errors.New("lsp: scheduler stopped")
 
+// ErrQueueFull is delivered on the result channel (and reported by TrySubmit's
+// bool) when a lane queue is already at capacity. The task is not enqueued; the
+// caller decides whether to drop, retry, or re-arm. It exists so notification-path
+// callers can stay non-blocking instead of parking the LSP read loop on a full
+// queue, which would freeze the whole server.
+var ErrQueueFull = errors.New("lsp: scheduler queue full")
+
 // Task is one scheduled unit of work.
 type Task func(context.Context) error
 
@@ -84,16 +91,71 @@ func (s *Scheduler) Start(ctx context.Context, workerCount int) {
 	}
 }
 
-// Submit queues a task in lane and returns a one-shot result channel.
+// Submit queues a task in lane and returns a one-shot result channel. It blocks
+// while the lane queue is full, so it must only be called off the LSP read loop
+// (a blocked Submit there freezes message dispatch). Notification-path callers
+// use TrySubmit instead.
 func (s *Scheduler) Submit(ctx context.Context, lane Lane, task Task) <-chan TaskResult {
-	result := make(chan TaskResult, 1)
+	lane = clampLane(lane)
+	job, result, ready := s.buildJob(ctx, lane, task)
+	if !ready {
+		return result
+	}
+
+	select {
+	case <-job.ctx.Done():
+		result <- TaskResult{Err: job.ctx.Err()}
+		close(result)
+	case s.queues[lane] <- job:
+	}
+	return result
+}
+
+// TrySubmit is the non-blocking form of Submit. It enqueues task and returns
+// (result, true) when the lane queue has room, or (result, false) without
+// enqueuing when the queue is full (result already carries ErrQueueFull) or the
+// scheduler is stopped/its context is done (no worker will run the task). Callers
+// dispatched on the LSP read loop MUST use TrySubmit so a saturated queue can
+// never block the loop, wedging the entire server.
+func (s *Scheduler) TrySubmit(ctx context.Context, lane Lane, task Task) (<-chan TaskResult, bool) {
+	lane = clampLane(lane)
+	job, result, ready := s.buildJob(ctx, lane, task)
+	if !ready {
+		// Trivially resolved (nil task) or rejected (stopped): either way no live
+		// task was queued, so report not-accepted.
+		return result, false
+	}
+
+	select {
+	case <-job.ctx.Done():
+		result <- TaskResult{Err: job.ctx.Err()}
+		close(result)
+		return result, false
+	case s.queues[lane] <- job:
+		return result, true
+	default:
+		result <- TaskResult{Err: ErrQueueFull}
+		close(result)
+		return result, false
+	}
+}
+
+func clampLane(lane Lane) Lane {
+	if lane < LaneInteractive || lane > LaneBackground {
+		return LaneBackground
+	}
+	return lane
+}
+
+// buildJob validates task and prepares the shared result channel. When ready is
+// false the result is already resolved (a nil task succeeds; a stopped scheduler
+// yields ErrSchedulerStopped) and the caller must not touch the queue.
+func (s *Scheduler) buildJob(ctx context.Context, lane Lane, task Task) (job scheduledTask, result chan TaskResult, ready bool) {
+	result = make(chan TaskResult, 1)
 	if task == nil {
 		result <- TaskResult{}
 		close(result)
-		return result
-	}
-	if lane < LaneInteractive || lane > LaneBackground {
-		lane = LaneBackground
+		return scheduledTask{}, result, false
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -105,17 +167,10 @@ func (s *Scheduler) Submit(ctx context.Context, lane Lane, task Task) <-chan Tas
 	if stopped {
 		result <- TaskResult{Err: ErrSchedulerStopped}
 		close(result)
-		return result
+		return scheduledTask{}, result, false
 	}
 
-	job := scheduledTask{ctx: ctx, task: task, result: result}
-	select {
-	case <-ctx.Done():
-		result <- TaskResult{Err: ctx.Err()}
-		close(result)
-	case s.queues[lane] <- job:
-	}
-	return result
+	return scheduledTask{ctx: ctx, task: task, result: result}, result, true
 }
 
 // Stop cancels workers and waits for them to exit.

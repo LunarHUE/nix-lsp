@@ -112,6 +112,62 @@
     "readOnly": false,
     "type": "null or package or (absolute path, not containing newlines or colons)"
   },
+  "boot.initrd.systemd.enable": {
+    "declarations": [
+      "nixos/modules/system/boot/systemd/initrd.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "false"
+    },
+    "description": "Whether to enable systemd in initrd.",
+    "loc": [
+      "boot",
+      "initrd",
+      "systemd",
+      "enable"
+    ],
+    "readOnly": false,
+    "type": "boolean"
+  },
+  "boot.loader.systemd-boot.configurationLimit": {
+    "declarations": [
+      "nixos/modules/system/boot/loader/systemd-boot/systemd-boot.nix"
+    ],
+    "default": {
+      "_type": "literalExpression",
+      "text": "null"
+    },
+    "description": "Maximum number of latest generations in the boot menu.\nUseful to prevent boot partition running out of disk space.\n`null` means no limit i.e. all generations\nthat were not garbage collected yet.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "120"
+    },
+    "loc": [
+      "boot",
+      "loader",
+      "systemd-boot",
+      "configurationLimit"
+    ],
+    "readOnly": false,
+    "type": "null or signed integer"
+  },
+  "system.stateVersion": {
+    "declarations": [
+      "nixos/modules/misc/version.nix"
+    ],
+    "description": "This option defines the first version of NixOS you have installed on this particular machine,\nand is used to maintain compatibility with application data (e.g. databases) created on older NixOS versions.\n\nMost users should **never** change this value after the initial install, for any reason,\neven if you've upgraded your system to a new NixOS release.\n",
+    "example": {
+      "_type": "literalExpression",
+      "text": "\"24.05\""
+    },
+    "loc": [
+      "system",
+      "stateVersion"
+    ],
+    "readOnly": false,
+    "type": "string"
+  },
   "boot.loader.systemd-boot.enable": {
     "declarations": [
       "nixos/modules/system/boot/loader/systemd-boot/systemd-boot.nix"
