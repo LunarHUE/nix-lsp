@@ -132,10 +132,19 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
   Diagnostics recomputes are now coalesced per file (only the newest buffer
   matters) and the notification path never blocks, so heavy typing always
   converges to the current content.
-- **`unknown-option` false positive on hidden options** (in progress this
-  commit, finalized in the next): real options declared `internal`/invisible
-  are absent from the docs dataset (e.g. `system.disableInstallerTools`);
-  the warning now requires a near-miss did-you-mean suggestion to fire.
+- **`unknown-option` false positive on hidden options**: real options
+  declared `internal`/invisible are absent from the docs dataset (e.g.
+  `system.disableInstallerTools`); the warning now requires a near-miss
+  did-you-mean suggestion to fire, so it never flags what it cannot correct.
+- **Misplaced missing-`;` errors**: deleting the `;` after a binding like
+  `pkgs = import nixpkgs { ... }` used to error below the real mistake; the
+  diagnostic now anchors where the `;` belongs and names the swallowed
+  binding when provable (`missing ';' before 'corePackages'`).
+- **Precise expected-token syntax errors**: previously invisible parser
+  recoveries now report `expected '}'` / `expected ']'` / `expected ')'` at
+  their exact position, and unclosed delimiters at end of file say
+  `unclosed '{' (expected '}')`; generic "syntax error" messages are dropped
+  when a precise one covers the same spot.
 
 - Completion now fires on trailing dots at any depth (`networking.firewall.`,
   nested attrsets, `config.`-prefixed paths, quoted segments like
