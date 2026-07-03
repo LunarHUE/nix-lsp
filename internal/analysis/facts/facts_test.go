@@ -2,9 +2,12 @@ package facts
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/memo"
@@ -371,6 +374,128 @@ func TestImportEdgesInvalidatedByGitState(t *testing.T) {
 	}
 	if !edges2[0].GitTracked {
 		t.Fatalf("target still untracked after git add + token bump: %+v", edges2[0])
+	}
+}
+
+// TestFileInputSupersessionBoundsEntries is the eviction proof: an edit burst on
+// a single path mints a fresh FileID every keystroke, and without eviction the
+// memo engine accumulates every superseded FileID's input and derived entries
+// forever. After eviction the entry count must plateau near one file's worth of
+// state plus the shared singletons, not grow linearly with the number of edits.
+func TestFileInputSupersessionBoundsEntries(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := normalize(t, filepath.Join(root, "default.nix"))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+
+	const edits = 40
+	for i := 0; i < edits; i++ {
+		content := []byte(fmt.Sprintf("let x = %d; in x", i))
+		fileID := SupersedeFileInput(engine, source, vfs.ContentHash(content), content)
+		if _, err := FileDiagnostics(context.Background(), engine, fileID); err != nil {
+			t.Fatalf("edit %d FileDiagnostics error = %v", i, err)
+		}
+	}
+
+	// One live file drives at most FileInput+ParseTree+ImportEdges+Scopes+
+	// FileDiagnostics (5) derived/input entries, plus the Workspace and GitState
+	// singletons (2). Allow generous headroom; the point is the count does not
+	// scale with edits (which would be 5*40+2 without eviction).
+	const bound = 12
+	if entries := engine.Stats().Entries; entries > bound {
+		t.Fatalf("engine retained %d entries after %d edits, want <= %d; superseded FileIDs are not evicted", entries, edits, bound)
+	}
+}
+
+// TestFeatureRegistrationDoesNotEvictNewerFileID pins the writer/reader split:
+// a feature request (hover/completion) holding a slightly OLDER snapshot
+// registers its input via the non-evicting FileInputFor. If that registration
+// evicted, it would tear down the NEWER FileID's entries out from under a
+// mid-flight diagnostics compute, whose FileDiagnostics would then error with
+// ErrNoQuery and that edit's publish would be lost with nothing to re-trigger
+// it. Only the diagnostics coalescer (single writer per path) may supersede.
+func TestFeatureRegistrationDoesNotEvictNewerFileID(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := normalize(t, filepath.Join(root, "default.nix"))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+
+	// The diagnostics writer registers the newest edit.
+	newContent := []byte("let x = 2; in x")
+	newFileID := SupersedeFileInput(engine, source, vfs.ContentHash(newContent), newContent)
+
+	// A feature request arrives holding the pre-edit snapshot and registers it.
+	oldContent := []byte("let x = 1; in x")
+	FileInputFor(engine, source, vfs.ContentHash(oldContent), oldContent)
+
+	// The newer FileID's input must have survived: the diagnostics compute that
+	// registered it can still complete.
+	if _, err := FileDiagnostics(context.Background(), engine, newFileID); err != nil {
+		t.Fatalf("newer FileID's compute failed after a feature registered an older snapshot: %v", err)
+	}
+}
+
+// TestConcurrentReadDuringSupersession stresses the eviction-safety contract: one
+// goroutine repeatedly supersedes a path's FileID (dropping the prior FileID's
+// entries) while others hammer reads of an older FileID. A read of an evicted
+// FileID must never panic or return wrong data — it either recomputes cleanly
+// (the reader re-registers its own input via FileInputFor) or surfaces the
+// engine's clean miss. Run under -race to catch data races on the entries map.
+func TestConcurrentReadDuringSupersession(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := normalize(t, filepath.Join(root, "default.nix"))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+
+	// A stable "old" FileID, registered once. The writer below will evict it as it
+	// supersedes the path; the readers keep reading it without re-registering.
+	oldContent := []byte("let old = 0; in old")
+	oldFileID := FileInputFor(engine, source, vfs.ContentHash(oldContent), oldContent)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+
+	// Writer: bursts of superseding edits (single writer per path, as the server's
+	// coalescer guarantees; only this writer uses the evicting SupersedeFileInput —
+	// readers register non-evictingly, mirroring the feature/diagnostics split).
+	// Each edit's Forget drops the prior FileID — including the old one the readers
+	// hold. The writer's own read always succeeds because no reader supersedes the
+	// path.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 300; i++ {
+			content := []byte(fmt.Sprintf("let x = %d; in x", i))
+			fileID := SupersedeFileInput(engine, source, vfs.ContentHash(content), content)
+			if _, err := FileDiagnostics(context.Background(), engine, fileID); err != nil {
+				errs <- fmt.Errorf("writer edit %d: %w", i, err)
+				return
+			}
+		}
+	}()
+
+	// Readers: hammer the old FileID the writer is evicting. A read either succeeds
+	// (it beat the eviction, or recomputed before its input was dropped) or returns
+	// ErrNoQuery — the engine's clean miss once the plain FileInput key is gone and
+	// has no query to recompute from. Never a panic, a data race, or wrong data.
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				_, err := ParseTree(context.Background(), engine, oldFileID)
+				if err != nil && !errors.Is(err, memo.ErrNoQuery) {
+					errs <- fmt.Errorf("reader iter %d: %w", i, err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
 

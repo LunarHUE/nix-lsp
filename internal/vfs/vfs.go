@@ -27,8 +27,6 @@ type File struct {
 	Content []byte
 	// Hash is the hex-encoded SHA-256 hash of Content.
 	Hash string
-	// Generation is the Store generation captured by the Snapshot.
-	Generation uint64
 	// Overlay reports whether Content came from an open editor buffer.
 	Overlay bool
 	// Version is the LSP document version of the open buffer this File was read
@@ -53,22 +51,13 @@ type overlayFile struct {
 // Use Snapshot to hand an immutable view to analysis code. All paths are
 // normalized to absolute filesystem paths before lookup.
 type Store struct {
-	mu         sync.RWMutex
-	generation uint64
-	overlays   map[string]overlayFile
+	mu       sync.RWMutex
+	overlays map[string]overlayFile
 }
 
 // New creates an empty VFS store.
 func New() *Store {
 	return &Store{overlays: make(map[string]overlayFile)}
-}
-
-// Generation returns the current overlay generation. It increments whenever an
-// open buffer is opened, updated, or closed.
-func (s *Store) Generation() uint64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.generation
 }
 
 // OpenBuffer opens or replaces an in-memory editor buffer for path at the given
@@ -114,7 +103,6 @@ func (s *Store) CloseBuffer(path string) error {
 		return nil
 	}
 	delete(s.overlays, normalized)
-	s.generation++
 	return nil
 }
 
@@ -131,7 +119,7 @@ func (s *Store) Snapshot() *Snapshot {
 			version: overlay.version,
 		}
 	}
-	return &Snapshot{generation: s.generation, overlays: overlays}
+	return &Snapshot{overlays: overlays}
 }
 
 func (s *Store) setBuffer(path string, content []byte, version int32, allowCreate bool) (File, error) {
@@ -150,31 +138,20 @@ func (s *Store) setBuffer(path string, content []byte, version int32, allowCreat
 			return File{}, ErrBufferNotOpen
 		}
 	}
-	s.generation++
 	s.overlays[normalized] = overlayFile{content: copied, hash: hash, version: version}
 
 	return File{
-		Path:       normalized,
-		Content:    cloneBytes(copied),
-		Hash:       hash,
-		Generation: s.generation,
-		Overlay:    true,
-		Version:    version,
+		Path:    normalized,
+		Content: cloneBytes(copied),
+		Hash:    hash,
+		Overlay: true,
+		Version: version,
 	}, nil
 }
 
-// Snapshot is an immutable view of a Store's overlay state at one generation.
+// Snapshot is an immutable view of a Store's overlay state.
 type Snapshot struct {
-	generation uint64
-	overlays   map[string]overlayFile
-}
-
-// Generation returns the Store generation captured by this snapshot.
-func (s *Snapshot) Generation() uint64 {
-	if s == nil {
-		return 0
-	}
-	return s.generation
+	overlays map[string]overlayFile
 }
 
 // OverlayPaths returns the normalized paths of every open buffer in this
@@ -216,12 +193,11 @@ func (s *Snapshot) ReadFile(path string) (File, error) {
 
 	if overlay, ok := s.overlays[normalized]; ok {
 		return File{
-			Path:       normalized,
-			Content:    cloneBytes(overlay.content),
-			Hash:       overlay.hash,
-			Generation: s.generation,
-			Overlay:    true,
-			Version:    overlay.version,
+			Path:    normalized,
+			Content: cloneBytes(overlay.content),
+			Hash:    overlay.hash,
+			Overlay: true,
+			Version: overlay.version,
 		}, nil
 	}
 
@@ -230,12 +206,11 @@ func (s *Snapshot) ReadFile(path string) (File, error) {
 		return File{}, err
 	}
 	return File{
-		Path:       normalized,
-		Content:    cloneBytes(content),
-		Hash:       ContentHash(content),
-		Generation: s.generation,
-		Overlay:    false,
-		Version:    NoVersion,
+		Path:    normalized,
+		Content: cloneBytes(content),
+		Hash:    ContentHash(content),
+		Overlay: false,
+		Version: NoVersion,
 	}, nil
 }
 

@@ -924,7 +924,11 @@ func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snap
 		packagesIndex: h.packagesSnapshot(),
 	}
 
-	fileID := facts.FileInputFor(h.memo, inputs.path, inputs.contentHash, file.Content)
+	// Superseding registration: this compute is the single writer per path (the
+	// diagnostics coalescer serializes recomputes per URI), so it is the one call
+	// site allowed to evict the previous FileID's memo entries. Feature requests
+	// register via the non-evicting FileInputFor and must never supersede.
+	fileID := facts.SupersedeFileInput(h.memo, inputs.path, inputs.contentHash, file.Content)
 	diagnostics, err := facts.FileDiagnostics(ctx, h.memo, fileID)
 	if err != nil {
 		return err

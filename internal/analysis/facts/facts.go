@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/wesleybaldwin/nix-lsp/internal/analysis/flake"
 	importedges "github.com/wesleybaldwin/nix-lsp/internal/analysis/imports"
@@ -90,7 +91,13 @@ func SetGitState(engine *memo.Engine, token string) {
 }
 
 // SetFileInput stores the current file input for fileID. fileID must be a
-// composite produced by FileID(path, hash).
+// composite produced by FileID(path, hash). It never evicts: feature requests
+// (hover/completion/symbols) register inputs from whatever snapshot they hold,
+// which may be slightly older than the one the diagnostics writer registered,
+// and an evicting registration here could tear down the newer FileID's entries
+// out from under a mid-flight diagnostics compute (losing that edit's publish,
+// with nothing to re-trigger it). Eviction belongs to SupersedeFileInput, which
+// only the single writer per path calls.
 func SetFileInput(engine *memo.Engine, fileID string, input FileInput) {
 	input.Content = cloneBytes(input.Content)
 	engine.SetInput(FileInputKey(fileID), input)
@@ -99,13 +106,46 @@ func SetFileInput(engine *memo.Engine, fileID string, input FileInput) {
 // FileInputFor registers the file identified by path, contentHash, and content
 // as the current file input on the memo engine and returns its composite
 // fileID. It is the single constructor for the {FileID, SetFileInput} tuple:
-// every caller that needs a file analyzed goes through it, so registering a
-// file's identity has exactly one spelling in the codebase (grep FileID/
-// SetFileInput and you should find only this body and the singleton input
-// helpers, never an open-coded pair at a call site).
+// every caller that needs a file analyzed goes through it (or through
+// SupersedeFileInput, which wraps it), so registering a file's identity has
+// exactly one spelling in the codebase.
 func FileInputFor(engine *memo.Engine, path, contentHash string, content []byte) string {
 	fileID := FileID(path, contentHash)
 	SetFileInput(engine, fileID, FileInput{Path: path, Content: content})
+	return fileID
+}
+
+// SupersedeFileInput registers the file input like FileInputFor and then evicts
+// every entry left over from a superseded FileID of the same path. ONLY the
+// single writer per path — the server's diagnostics coalescer, which computes
+// exactly once per settled edit — may call it; that single-writer discipline is
+// what makes eviction safe (no other writer can concurrently install an older
+// hash for the path and evict this one's entries mid-compute; concurrent feature
+// READS of an evicted key are safe per Engine.Forget's contract).
+//
+// Bounding the memo across an editing session. Every edit mints a fresh
+// FileID(path, hash), so the input key and all derived keys (ParseTree,
+// ImportEdges, Scopes, FlakeModel, FileDiagnostics) change ID on every
+// keystroke; nothing else ever drops the old ones, so the entry map would grow
+// without bound. Because every file-derived key stores the composite fileID in
+// its ID field (path + NUL + hash), a stateless predicate identifies the whole
+// superseded subgraph: keys whose ID belongs to this path (the exact
+// "path\x00" prefix — NUL cannot appear in a path, so no sibling path matches)
+// but is not the fileID just installed. Evicting them holds the map at roughly
+// one live file's worth of entries per path, and the sweep is self-healing: any
+// straggler a non-evicting feature registration left behind is dropped on the
+// next edit's supersession. The new input is set first so a concurrent reader
+// on a slightly older snapshot never observes the path with zero entries.
+//
+// A closed buffer's last FileID is not evicted here (facts has no per-path close
+// hook). That residue is bounded by the number of distinct files ever opened,
+// not by keystrokes, so it does not reintroduce the unbounded-growth leak.
+func SupersedeFileInput(engine *memo.Engine, path, contentHash string, content []byte) string {
+	fileID := FileInputFor(engine, path, contentHash, content)
+	prefix := path + fileIDSeparator
+	engine.Forget(func(key memo.Key) bool {
+		return key.ID != fileID && strings.HasPrefix(key.ID, prefix)
+	})
 	return fileID
 }
 

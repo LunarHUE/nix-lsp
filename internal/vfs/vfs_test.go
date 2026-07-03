@@ -57,7 +57,7 @@ func TestSnapshotImmutability(t *testing.T) {
 	}
 }
 
-func TestHashChangesAndGenerationIncrements(t *testing.T) {
+func TestHashChangesOnBufferUpdate(t *testing.T) {
 	path := writeTempFile(t, "disk")
 	store := New()
 
@@ -72,15 +72,6 @@ func TestHashChangesAndGenerationIncrements(t *testing.T) {
 
 	if first.Hash == second.Hash {
 		t.Fatalf("hash did not change: %q", first.Hash)
-	}
-	if first.Generation != 1 {
-		t.Fatalf("first generation = %d, want 1", first.Generation)
-	}
-	if second.Generation != 2 {
-		t.Fatalf("second generation = %d, want 2", second.Generation)
-	}
-	if store.Snapshot().Generation() != 2 {
-		t.Fatalf("snapshot generation = %d, want 2", store.Snapshot().Generation())
 	}
 }
 

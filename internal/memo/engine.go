@@ -96,6 +96,52 @@ func (e *Engine) SetInput(key Key, value any) {
 	e.markDependentsDirtyLocked(key)
 }
 
+// Forget removes every entry whose key satisfies pred, together with the reverse
+// dependency edges out of those entries and their recompute counters. It is the
+// engine's eviction primitive: callers use it to drop a superseded identity's
+// whole subgraph (e.g. every entry keyed on an old FileID) so the entry map
+// stays bounded across a long editing session instead of leaking one parse tree
+// per keystroke.
+//
+// Eviction safety against a concurrent reader of a forgotten key. The intended
+// caller is a single writer per identity (the server's diagnostics coalescer),
+// so by the time a key is forgotten no live writer still computes against it —
+// almost: a feature request (hover/completion) can hold a slightly older
+// snapshot and read a forgotten key concurrently. That read is safe. Forget
+// takes the write lock, so it never races get's map access. A reader that finds
+// the entry gone either recomputes from the registered query (repopulating a
+// fresh entry that is itself eligible for the next Forget) or, for a plain input
+// key with no registered query, receives ErrNoQuery. It never panics and never
+// returns another key's value. A recompute that races Forget may re-add an entry
+// just after it is dropped; that is benign — at most one identity's worth of
+// state lingers until the next supersession forgets it again.
+//
+// Reverse-edge bookkeeping. removeDepsLocked drops the forgotten key from the
+// reverse sets of each dependency it read. The reverse set pointing *at* the
+// forgotten key is left for its own dependents to clean as they are forgotten or
+// recomputed; when every dependent of a forgotten key is itself forgotten (the
+// whole-subgraph case), those sets drain to empty and are deleted.
+func (e *Engine) Forget(pred func(key Key) bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for key := range e.entries {
+		if !pred(key) {
+			continue
+		}
+		e.removeDepsLocked(key)
+		delete(e.entries, key)
+		delete(e.recomputes, key)
+	}
+}
+
+// Len returns the number of stored entries. It exists for eviction tests and
+// diagnostics; Stats().Entries reports the same count.
+func (e *Engine) Len() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.entries)
+}
+
 // Get returns key's value, recomputing it lazily when dirty.
 func (e *Engine) Get(ctx context.Context, key Key) (any, error) {
 	return e.get(ctx, key, nil)

@@ -179,6 +179,92 @@ func TestConcurrentReadSafety(t *testing.T) {
 	}
 }
 
+func TestForgetDropsMatchingEntriesAndReverseEdges(t *testing.T) {
+	engine := New()
+	shared := Key{Kind: "input", ID: "shared"}
+	oldInput := Key{Kind: "FileInput", ID: "old"}
+	newInput := Key{Kind: "FileInput", ID: "new"}
+	oldDerived := Key{Kind: "derived", ID: "old"}
+	newDerived := Key{Kind: "derived", ID: "new"}
+
+	engine.SetInput(shared, 100)
+	engine.SetInput(oldInput, 1)
+	engine.SetInput(newInput, 2)
+	engine.Register("derived", func(ctx context.Context, q *Context, key Key) (any, error) {
+		base, err := q.Get(ctx, Key{Kind: "FileInput", ID: key.ID})
+		if err != nil {
+			return nil, err
+		}
+		bonus, err := q.Get(ctx, shared)
+		if err != nil {
+			return nil, err
+		}
+		return base.(int) + bonus.(int), nil
+	})
+
+	mustGet(t, engine, oldDerived)
+	mustGet(t, engine, newDerived)
+
+	// Forget everything belonging to the "old" identity: its input and derived.
+	engine.Forget(func(key Key) bool { return key.ID == "old" })
+
+	if got := engine.Len(); got != 3 {
+		t.Fatalf("Len after Forget = %d, want 3 (shared + new input + new derived)", got)
+	}
+	if _, err := engine.Get(context.Background(), newDerived); err != nil {
+		t.Fatalf("surviving newDerived Get error = %v", err)
+	}
+
+	// The reverse edge from shared to oldDerived must be gone: bumping shared
+	// must not resurrect or dirty a forgotten key. Recompute the survivor and
+	// confirm it (not the forgotten one) recomputed.
+	before := engine.Stats().Recomputes[newDerived]
+	engine.SetInput(shared, 200)
+	if got := mustGet(t, engine, newDerived); got != 202 {
+		t.Fatalf("newDerived after shared bump = %v, want 202", got)
+	}
+	if got := engine.Stats().Recomputes[newDerived]; got != before+1 {
+		t.Fatalf("newDerived recomputes = %d, want %d", got, before+1)
+	}
+	// The forgotten key's recompute counter was cleared, and a fresh Get recomputes
+	// it from scratch (input still present as it was re-set? no — it was forgotten).
+	if _, ok := engine.Stats().Recomputes[oldDerived]; ok {
+		t.Fatalf("forgotten oldDerived recompute counter survived: %v", engine.Stats().Recomputes)
+	}
+}
+
+// TestForgetInputThenReadRecomputesOrMisses documents what a concurrent reader of
+// a forgotten key experiences: a derived key with a registered query recomputes
+// cleanly, while a plain input key with no query surfaces ErrNoQuery — never a
+// panic or a stale wrong value.
+func TestForgetInputThenReadRecomputesOrMisses(t *testing.T) {
+	engine := New()
+	input := Key{Kind: "FileInput", ID: "x"}
+	derived := Key{Kind: "derived", ID: "x"}
+	engine.SetInput(input, 5)
+	engine.Register("derived", func(ctx context.Context, q *Context, key Key) (any, error) {
+		v, err := q.Get(ctx, Key{Kind: "FileInput", ID: key.ID})
+		if err != nil {
+			return nil, err
+		}
+		return v.(int) * 2, nil
+	})
+	mustGet(t, engine, derived)
+
+	// Forget only the derived entry (input remains): reading it must recompute.
+	engine.Forget(func(key Key) bool { return key.Kind == "derived" })
+	if got := mustGet(t, engine, derived); got != 10 {
+		t.Fatalf("derived after Forget = %v, want recompute to 10", got)
+	}
+
+	// Forget the input too: a plain input key has no registered query, so reading
+	// it surfaces ErrNoQuery rather than panicking.
+	engine.Forget(func(key Key) bool { return key.Kind == "FileInput" })
+	if _, err := engine.Get(context.Background(), input); !errors.Is(err, ErrNoQuery) {
+		t.Fatalf("Get(forgotten input) error = %v, want ErrNoQuery", err)
+	}
+}
+
 func mustGet(t *testing.T, engine *Engine, key Key) any {
 	t.Helper()
 	value, err := engine.Get(context.Background(), key)
