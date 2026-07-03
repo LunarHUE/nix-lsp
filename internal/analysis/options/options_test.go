@@ -22,8 +22,8 @@ func loadFixture(t *testing.T) *Index {
 
 func TestParseCount(t *testing.T) {
 	ix := loadFixture(t)
-	if got := ix.Len(); got != 13 {
-		t.Fatalf("Len = %d, want 13", got)
+	if got := ix.Len(); got != 17 {
+		t.Fatalf("Len = %d, want 17", got)
 	}
 }
 

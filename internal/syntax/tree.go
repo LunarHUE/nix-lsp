@@ -127,10 +127,54 @@ func (t *Tree) Diagnostics() []Diagnostic {
 				Range:   node.Range(),
 				Code:    "syntax-error",
 			})
+			return true
+		}
+		// Walk visits only named nodes, but the parser records a binding whose
+		// terminating `;` was never typed as an anonymous zero-width MISSING ";"
+		// token — the recovery for `{ x = 1 }` and for a nested `wg0 = { ... }`
+		// missing its semicolon before the closing brace. Surface exactly that
+		// token as a classified diagnostic; other anonymous MISSING tokens
+		// (a delimiter the parser closed on its own) stay unreported, as before.
+		switch node.Kind() {
+		case "binding", "inherit", "inherit_from":
+			if missing, ok := missingSemicolon(node); ok {
+				diagnostics = append(diagnostics, Diagnostic{
+					Message: missingSemicolonMessage,
+					Range:   missing.Range(),
+					Code:    "syntax-error",
+				})
+			}
 		}
 		return true
 	})
 	return diagnostics
+}
+
+// missingSemicolonMessage is the classified hint for a binding (or inherit)
+// whose terminating semicolon is absent, shared by the MISSING-token and the
+// ERROR-recovery detections so both spellings of the mistake read identically.
+const missingSemicolonMessage = "syntax error: missing ';' after binding"
+
+// missingSemicolon returns the anonymous MISSING ";" token of a binding-like
+// node, scanning all children because MISSING punctuation is unnamed and thus
+// invisible to the named-only Walk.
+func missingSemicolon(node Node) (Node, bool) {
+	if node.node == nil {
+		return Node{}, false
+	}
+	node.nav.Lock()
+	count := int(node.node.ChildCount())
+	children := make([]Node, 0, count)
+	for i := 0; i < count; i++ {
+		children = append(children, wrapNode(node.node.Child(i), node.content, node.nav))
+	}
+	node.nav.Unlock()
+	for _, child := range children {
+		if child.IsMissing() && child.Kind() == ";" {
+			return child, true
+		}
+	}
+	return Node{}, false
 }
 
 // syntaxErrorMessage returns a hint-enriched message for an ERROR node whose
@@ -141,8 +185,8 @@ func syntaxErrorMessage(node Node) string {
 	if name, ok := loneAttributeName(node); ok {
 		return "syntax error: attribute '" + name + "' has no value (expected '" + name + " = <value>;')"
 	}
-	if isMissingSeparator(node) {
-		return "syntax error: missing ';' after binding"
+	if isMissingSeparator(node) || isStrayCloseAfterValue(node) {
+		return missingSemicolonMessage
 	}
 	return "syntax error"
 }
@@ -154,7 +198,9 @@ func syntaxErrorMessage(node Node) string {
 // `{ wg0 }` and for a binding value `interfaces = { wg0 }`, whose ERROR is an
 // attrpath followed by that formals); and a bare name with nothing after it, whose
 // ERROR has the identifier as its only child. Requiring a single plain formal
-// keeps a partial function like `{ a, b }` or `{ pkgs, ... }` from matching.
+// keeps a partial function like `{ a, b }` or `{ pkgs, ... }` from matching, and
+// the hint is only ever emitted with a provably complete identifier (see
+// fullIdentifierText), so no recovery can put a truncated name in the message.
 func loneAttributeName(errNode Node) (string, bool) {
 	children := errNode.NamedChildren()
 	for _, child := range children {
@@ -164,8 +210,8 @@ func loneAttributeName(errNode Node) (string, bool) {
 			}
 		}
 	}
-	if len(children) == 1 && children[0].Kind() == "identifier" {
-		return children[0].Text(), true
+	if len(children) == 1 {
+		return fullIdentifierText(children[0])
 	}
 	return "", false
 }
@@ -185,11 +231,43 @@ func singleFormalName(formals Node) (string, bool) {
 	if !formal.ChildByFieldName("default").IsZero() {
 		return "", false
 	}
-	name := formal.ChildByFieldName("name")
-	if name.IsZero() || name.Kind() != "identifier" {
+	return fullIdentifierText(formal.ChildByFieldName("name"))
+}
+
+// fullIdentifierText returns node's text only when node is a real (non-missing)
+// identifier whose text is provably the complete token in the source: non-empty
+// and not abutting further identifier characters on either side. Error recovery
+// must never let a diagnostic name a truncated identifier (reporting `wg` for a
+// buffer that says `wg0`), so any node that fails this proof disqualifies the
+// name-bearing hint entirely.
+func fullIdentifierText(node Node) (string, bool) {
+	if node.node == nil || node.IsMissing() || node.Kind() != "identifier" {
 		return "", false
 	}
-	return name.Text(), true
+	start, end := int(node.node.StartByte()), int(node.node.EndByte())
+	if start >= end || end > len(node.content) {
+		return "", false
+	}
+	if start > 0 && isIdentifierByte(node.content[start-1]) {
+		return "", false
+	}
+	if end < len(node.content) && isIdentifierByte(node.content[end]) {
+		return "", false
+	}
+	return string(node.content[start:end]), true
+}
+
+// isIdentifierByte reports whether b can appear in a Nix identifier
+// ([a-zA-Z_][a-zA-Z0-9_'-]*).
+func isIdentifierByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '\'' || b == '-':
+		return true
+	default:
+		return false
+	}
 }
 
 // isMissingSeparator reports whether an ERROR node is the lone `=` tree-sitter
@@ -201,6 +279,17 @@ func isMissingSeparator(errNode Node) bool {
 		return false
 	}
 	return errNode.Parent().Kind() == "apply_expression"
+}
+
+// isStrayCloseAfterValue reports whether an ERROR node is the lone `}` recovery
+// left when a binding's `;` is missing and the enclosing set's closing brace
+// arrives in its place (`wg0 = { ... } };` recovers as the binding swallowing
+// `};` with the stray `}` wrapped in an ERROR child of the binding).
+func isStrayCloseAfterValue(errNode Node) bool {
+	if errNode.Text() != "}" {
+		return false
+	}
+	return errNode.Parent().Kind() == "binding"
 }
 
 // Walk calls fn for every node in depth-first order. Returning false skips the

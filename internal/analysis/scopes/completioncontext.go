@@ -243,6 +243,9 @@ func optionContext(prefix []string, partial string, replace syntax.Range) (Compl
 
 // bareCompletion classifies a bare identifier (no preceding dot) in expression
 // position: a `with pkgs;`-supplied name or an ordinary visible-binding name.
+// With no identifier at all it can still classify an empty attrset body in
+// option-binding position (emptyAttrsetOptionContext) or an empty with-pkgs
+// list slot.
 func bareCompletion(file *File, tree *syntax.Tree, content []byte, pos syntax.Position, partial string, replace syntax.Range) (CompletionContext, bool) {
 	node := deepestTouching(tree, pos)
 	if node.IsZero() {
@@ -255,10 +258,17 @@ func bareCompletion(file *File, tree *syntax.Tree, content []byte, pos syntax.Po
 		varExpr = varExpr.Parent()
 	}
 	if varExpr.Kind() != "variable_expression" {
-		// No identifier under the cursor. Only an empty expression slot inside a
-		// list may still take a (bare, empty) with-pkgs completion.
-		if partial == "" && enclosingWithPkgs(node, pos) && inListPosition(node) {
-			return CompletionContext{Kind: WithPkgsName, Partial: "", Replace: replace}, true
+		// No identifier under the cursor. An empty attrset body in binding
+		// position offers its option path's children; otherwise only an empty
+		// expression slot inside a list may still take a (bare, empty) with-pkgs
+		// completion.
+		if partial == "" {
+			if cctx, ok := emptyAttrsetOptionContext(node, pos, replace); ok {
+				return cctx, true
+			}
+			if enclosingWithPkgs(node, pos) && inListPosition(node) {
+				return CompletionContext{Kind: WithPkgsName, Partial: "", Replace: replace}, true
+			}
 		}
 		return CompletionContext{}, false
 	}
@@ -276,6 +286,49 @@ func bareCompletion(file *File, tree *syntax.Tree, content []byte, pos syntax.Po
 		return CompletionContext{Kind: WithPkgsName, Partial: partial, Replace: replace}, true
 	}
 	return CompletionContext{Kind: LocalName, Partial: partial, Replace: replace}, true
+}
+
+// emptyAttrsetOptionContext classifies a cursor resting inside an EMPTY (or
+// whitespace-only) attribute-set body whose enclosing bindings compose an option
+// path: in `wg0 = { <cursor> }` under networking.wireguard.interfaces the
+// submodule's options complete with no prefix typed. node must be the attrset
+// itself (it is the deepest node touching pos exactly when the body holds no
+// named node, so a cursor inside any nested expression never lands here), pos
+// must sit strictly between the braces, and the composed path must survive
+// config-stripping with at least one segment. Anything else declines, so data
+// attrsets in non-binding positions (function bodies, list elements) and every
+// previously classified position keep their existing behavior.
+func emptyAttrsetOptionContext(node syntax.Node, pos syntax.Position, replace syntax.Range) (CompletionContext, bool) {
+	switch node.Kind() {
+	case "attrset_expression", "rec_attrset_expression":
+	default:
+		return CompletionContext{}, false
+	}
+	if len(node.NamedChildren()) != 0 {
+		return CompletionContext{}, false
+	}
+	r := node.Range()
+	if !positionLess(r.Start, pos) || !positionLess(pos, r.End) {
+		return CompletionContext{}, false
+	}
+	binding, ok := enclosingBinding(node)
+	if !ok {
+		return CompletionContext{}, false
+	}
+	attrpath := binding.ChildByFieldName("attrpath")
+	segs, ok := staticAttrpathSegments(attrpath)
+	if !ok || len(segs) == 0 {
+		return CompletionContext{}, false
+	}
+	path, ok := assembleBindingPath(binding, attrpath, len(segs)-1)
+	if !ok {
+		return CompletionContext{}, false
+	}
+	cctx, ok := optionContext(path, "", replace)
+	if !ok || len(cctx.Prefix) == 0 {
+		return CompletionContext{}, false
+	}
+	return cctx, true
 }
 
 // VisibleBindings returns the bindings lexically visible at pos, innermost scope

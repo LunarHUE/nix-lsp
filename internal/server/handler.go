@@ -706,8 +706,11 @@ func (h *Handler) computeFileDiagnostics(ctx context.Context, snapshot *vfs.Snap
 	// Dataset diagnostics (unknown-option, unknown-package) depend on the loaded
 	// index identity rather than file content, so they cannot be memoized in the
 	// FileDiagnostics fact; append them here so every publish path includes them
-	// once the indexes are loaded.
+	// once the indexes are loaded. The same index dependence applies to the
+	// option-schema guidance appended to syntax-error messages, so that
+	// enrichment also happens here, on a copy, never on the memoized slice.
 	diagnostics = append(diagnostics, h.datasetDiagnostics(ctx, fileID)...)
+	diagnostics = h.enrichSyntaxDiagnostics(ctx, fileID, diagnostics)
 
 	// Guard the in-memory cache by generation: a slower, older-generation
 	// compute (e.g. a didOpen task that lands after a newer didChange) must not

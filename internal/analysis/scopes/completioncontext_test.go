@@ -151,6 +151,33 @@ func TestCompletionContextAt(t *testing.T) {
 			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "fo", 1) },
 			true, LocalName, nil, "fo", "", false},
 
+		// Empty attrset body in option-binding position: the enclosing binding
+		// path alone classifies, with nothing typed yet.
+		{"empty attrset body simple", `{ networking = {  }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "= { ", 0) },
+			true, OptionPath, []string{"networking"}, "", "", true},
+		{"empty attrset body wildcard instance", "{ config, ... }:\n{\n  networking.wireguard.interfaces = {\n    wg0 = {\n      \n    };\n  };\n}\n",
+			func(t *testing.T, s string) syntax.Position { return posAtByte(s, strings.Index(s, "{\n      \n")+4) },
+			true, OptionPath, []string{"networking", "wireguard", "interfaces", "wg0"}, "", "", true},
+		{"empty attrset body config stripped", `{ config.networking = {  }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "= { ", 0) },
+			true, OptionPath, []string{"networking"}, "", "", true},
+
+		// Empty-body declines: no enclosing binding, a let value, a bare config
+		// prefix that strips to nothing, or a body that is not empty.
+		{"empty attrset function body", `{ pkgs }: {  }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, ": { ", 0) },
+			false, CompletionNone, nil, "", "", false},
+		{"empty attrset let value", `let x = {  }; in x`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "= { ", 0) },
+			false, CompletionNone, nil, "", "", false},
+		{"empty attrset bare config binding", `{ config = {  }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "= { ", 0) },
+			false, CompletionNone, nil, "", "", false},
+		{"non-empty attrset body declines", `{ networking = { a = 1; }; }`,
+			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "a = 1; ", 0) },
+			false, CompletionNone, nil, "", "", false},
+
 		// Bails.
 		{"inside comment", `# networking.foo`,
 			func(t *testing.T, s string) syntax.Position { return posAtEnd(t, s, "networking.", 0) },

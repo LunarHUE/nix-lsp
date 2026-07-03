@@ -133,6 +133,14 @@ func TestSyntaxErrorHints(t *testing.T) {
 			want: "syntax error: missing ';' after binding",
 		},
 		{
+			// A set's last binding missing its `;` leaves an anonymous zero-width
+			// MISSING ";" token (invisible to a named-only walk); it must surface
+			// as the classified hint.
+			name: "missing semicolon before closing brace",
+			src:  "{ foo = 1 }",
+			want: "syntax error: missing ';' after binding",
+		},
+		{
 			name: "unrecognized error keeps generic message",
 			src:  "foo = ;",
 			want: "syntax error",
@@ -156,6 +164,112 @@ func TestSyntaxErrorHints(t *testing.T) {
 				t.Fatalf("no syntax-error diagnostic with message %q; got %+v", tc.want, diagnostics)
 			}
 		})
+	}
+}
+
+// userExactSnippet is the verbatim buffer from the misclassification report: a
+// wg0 submodule binding missing the `;` after its inner closing brace.
+const userExactSnippet = "networking.wireguard.interfaces = {\n    wg0 = {\n      \n    }\n  };"
+
+// TestSyntaxErrorHintsUserExactSnippet is the regression for the report of a
+// truncated name ('wg' for a buffer that says 'wg0'): the user's exact text, in
+// the module wrapper it lives in, must produce exactly the classified missing-';'
+// hint — and no diagnostic may ever carry a name-bearing message here, truncated
+// or otherwise. The missing `;` before the inner `}` is recorded by the parser as
+// an anonymous zero-width MISSING ";" token on the wg0 binding.
+func TestSyntaxErrorHintsUserExactSnippet(t *testing.T) {
+	src := "{ config, ... }:\n{\n  " + userExactSnippet + "\n}\n"
+	diagnostics := parse(t, src).Diagnostics()
+	if len(diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want exactly the missing-';' hint", diagnostics)
+	}
+	d := diagnostics[0]
+	if want := "syntax error: missing ';' after binding"; d.Message != want {
+		t.Fatalf("message = %q, want %q", d.Message, want)
+	}
+	if strings.Contains(d.Message, "attribute '") {
+		t.Fatalf("message %q names an attribute; must never name one here", d.Message)
+	}
+	// The zero-width range sits right after the inner `}` where the `;` belongs.
+	if d.Range.Start != d.Range.End {
+		t.Fatalf("range = %+v, want zero-width", d.Range)
+	}
+	if d.Range.Start.Line != 5 || d.Range.Start.Character != 5 {
+		t.Fatalf("range start = %+v, want line 5 char 5 (after the inner '}')", d.Range.Start)
+	}
+}
+
+// TestSyntaxErrorHintsUserExactSnippetTopLevel runs the same buffer as a whole
+// file (no module wrapper): recovery differs (the outer `};` is swallowed and a
+// stray `}` ERROR lands inside the binding), but every message must still be the
+// missing-';' hint or the generic one — never a name-bearing hint.
+func TestSyntaxErrorHintsUserExactSnippetTopLevel(t *testing.T) {
+	diagnostics := parse(t, userExactSnippet+"\n").Diagnostics()
+	if len(diagnostics) == 0 {
+		t.Fatal("diagnostics = none, want syntax errors (invalid at top level)")
+	}
+	for _, d := range diagnostics {
+		if d.Message != "syntax error" && d.Message != "syntax error: missing ';' after binding" {
+			t.Errorf("message = %q, want the generic or the missing-';' message", d.Message)
+		}
+	}
+}
+
+// TestSyntaxErrorHintsNeverTruncatedName asserts the full-token proof: an ERROR
+// wrapping a lone identifier hint always names the complete token, so on every
+// probe the reported name, if any, is a full identifier of the source.
+func TestSyntaxErrorHintsNeverTruncatedName(t *testing.T) {
+	probes := []string{
+		"{\n  networking.wireguard.interfaces = {\n    wg0\n  };\n}\n",
+		"{ config, ... }:\n{\n  networking.wireguard.interfaces = {\n    wg\n  };\n}\n",
+	}
+	for _, src := range probes {
+		for _, d := range parse(t, src).Diagnostics() {
+			start := strings.Index(d.Message, "attribute '")
+			if start < 0 {
+				continue
+			}
+			rest := d.Message[start+len("attribute '"):]
+			end := strings.Index(rest, "'")
+			if end < 0 {
+				t.Fatalf("unterminated name in %q", d.Message)
+			}
+			name := rest[:end]
+			// The named attribute must appear in the source as a complete token
+			// (not merely as a prefix of a longer identifier).
+			if !containsFullToken(src, name) {
+				t.Errorf("message %q names %q, which is not a full token of %q", d.Message, name, src)
+			}
+		}
+	}
+}
+
+// containsFullToken reports whether name occurs in src with non-identifier (or
+// boundary) bytes on both sides.
+func containsFullToken(src, name string) bool {
+	for from := 0; ; {
+		i := strings.Index(src[from:], name)
+		if i < 0 {
+			return false
+		}
+		i += from
+		before := i == 0 || !isIdentByte(src[i-1])
+		after := i+len(name) == len(src) || !isIdentByte(src[i+len(name)])
+		if before && after {
+			return true
+		}
+		from = i + 1
+	}
+}
+
+func isIdentByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '\'' || b == '-':
+		return true
+	default:
+		return false
 	}
 }
 

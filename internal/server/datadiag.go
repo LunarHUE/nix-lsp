@@ -40,6 +40,25 @@ func (h *Handler) datasetDiagnostics(ctx context.Context, fileID string) []synta
 	return out
 }
 
+// enrichSyntaxDiagnostics appends option-schema guidance ("— <path> accepts
+// options like ...") to syntax-error messages whose range sits under a binding
+// path that resolves to an option group in the loaded index. Like the dataset
+// diagnostics it depends on the index identity, so it runs where they are
+// appended (computeFileDiagnostics) rather than in the memoized static set; the
+// datadiag helper copies before changing any message, so the memoized slice is
+// never mutated. With no index or an unparseable file it returns diags unchanged.
+func (h *Handler) enrichSyntaxDiagnostics(ctx context.Context, fileID string, diags []syntax.Diagnostic) []syntax.Diagnostic {
+	optionsIndex := h.optionsSnapshot()
+	if optionsIndex == nil || len(diags) == 0 {
+		return diags
+	}
+	tree, err := facts.ParseTree(ctx, h.memo, fileID)
+	if err != nil || tree == nil {
+		return diags
+	}
+	return datadiag.EnrichSyntaxDiagnostics(tree, optionsIndex, diags)
+}
+
 // appendDataset appends the plain syntax.Diagnostic of each rich dataset
 // diagnostic (dropping the per-fix suggestions, which the code-action path
 // recomputes) onto dst.

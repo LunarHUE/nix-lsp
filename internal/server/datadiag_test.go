@@ -166,6 +166,42 @@ func TestDatasetOptionTypeMismatchPublished(t *testing.T) {
 	}
 }
 
+func TestDatasetSyntaxErrorOptionGuidancePublished(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	initWithDatasets(t, handler, t.TempDir(), optionsFixturePath(t), "")
+	uri := mustURI(t, "/tmp/mod.nix")
+	// The misclassification report's exact buffer in its module wrapper: the wg0
+	// binding misses its `;`, and the published message must both classify the
+	// missing semicolon and carry the option guidance for the enclosing path.
+	src := "{ config, ... }:\n{\n  networking.wireguard.interfaces = {\n    wg0 = {\n      \n    }\n  };\n}\n"
+	openDocument(t, handler, uri, src)
+
+	d := waitForDiagnosticCode(t, handler, uri, "syntax-error")
+	want := "syntax error: missing ';' after binding — networking.wireguard.interfaces.wg0 accepts options like ips, peers, privateKey"
+	if d.Message != want {
+		t.Errorf("message = %q, want %q", d.Message, want)
+	}
+}
+
+func TestDatasetSyntaxErrorNoIndexKeepsPlainMessage(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+
+	// No options index: the same buffer publishes the classified hint with no
+	// option guidance appended.
+	initWorkspace(t, handler, t.TempDir())
+	uri := mustURI(t, "/tmp/mod.nix")
+	src := "{ config, ... }:\n{\n  networking.wireguard.interfaces = {\n    wg0 = {\n      \n    }\n  };\n}\n"
+	openDocument(t, handler, uri, src)
+
+	d := waitForDiagnosticCode(t, handler, uri, "syntax-error")
+	if want := "syntax error: missing ';' after binding"; d.Message != want {
+		t.Errorf("message = %q, want %q", d.Message, want)
+	}
+}
+
 func TestDatasetRefreshOnLoadRepublishes(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()
