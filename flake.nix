@@ -102,6 +102,11 @@
           allowed = [ "go.mod" "go.sum" "cmd" "internal" "third_party" "testdata" ];
         };
 
+        # Single source of truth for the build's version so the store-path
+        # `version` attribute and the binary's embedded `main.version` can never
+        # diverge (a dirty tree yields `<rev>-dirty` for both).
+        version = self.shortRev or self.dirtyShortRev or "dev";
+
         # The vsix derivation reads only the extension tree. vsce rebuilds out/
         # from src via the "compile" script and prunes devDependencies itself,
         # so out/ and node_modules are regenerated in the build, not shipped.
@@ -122,12 +127,12 @@
         # unnoticed). No test needs the network or a nix binary.
         nixls = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "nixls";
-          version = self.shortRev or self.dirtyShortRev or "dev";
+          inherit version;
           src = serverSrc;
           vendorHash = "sha256-cNKRQ5ArES8Ffpq1TB4VV6cvqbPSr32qzzIdQm+mcpE=";
           subPackages = [ "cmd/nixls" ];
           env.CGO_ENABLED = "1";
-          ldflags = [ "-s" "-w" "-X main.version=${self.shortRev or "dev"}" ];
+          ldflags = [ "-s" "-w" "-X main.version=${version}" ];
           nativeCheckInputs = [ pkgs.git ];
           preCheck = ''unset subPackages'';
         };

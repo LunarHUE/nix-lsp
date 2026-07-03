@@ -73,6 +73,11 @@ jobs:
         run: |
           cp result/nixls-${{ matrix.target }}.vsix .
           nix build .#nixls
+          # Assert the binary reports the exact version the flake evaluated to,
+          # so a build that embeds the wrong ldflags version can never ship.
+          expected="$(nix eval --raw .#nixls.version)"
+          actual="$(./result/bin/nixls --version)"
+          [[ "$actual" == *"$expected"* ]] || { echo "version mismatch: binary says '$actual', flake says '$expected'"; exit 1; }
           cp result/bin/nixls nixls-${{ matrix.target }}
 
       - uses: actions/upload-artifact@v7
