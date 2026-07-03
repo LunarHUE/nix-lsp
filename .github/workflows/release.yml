@@ -35,7 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
 
       - name: Build platform VSIX (tests run in the nix check phase)
         run: nix build .#vsix --print-build-logs
