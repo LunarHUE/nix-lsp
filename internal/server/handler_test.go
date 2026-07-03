@@ -19,7 +19,7 @@ func TestHandlerDidOpenStoresOverlayAndDiagnostics(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.nix")
 	uri := mustURI(t, path)
 
-	_, err := handler.Handle(context.Background(), "textDocument/didOpen", mustJSON(t, map[string]any{
+	_, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidOpen, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{
 			"uri":        uri,
 			"languageId": "nix",
@@ -51,7 +51,7 @@ func TestHandlerDidChangeUpdatesOverlayAndDiagnostics(t *testing.T) {
 
 	openDocument(t, handler, uri, "{")
 	waitForDiagnostics(t, handler, uri, 1)
-	_, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
+	_, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidChange, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": uri, "version": 2},
 		"contentChanges": []map[string]any{
 			{"text": "{ ok = true; }"},
@@ -80,7 +80,7 @@ func TestHandlerDidCloseRemovesOverlayAndDiagnostics(t *testing.T) {
 	uri := mustURI(t, path)
 
 	openDocument(t, handler, uri, "{")
-	if _, err := handler.Handle(context.Background(), "textDocument/didClose", mustJSON(t, map[string]any{
+	if _, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidClose, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": uri},
 	})); err != nil {
 		t.Fatalf("didClose error = %v", err)
@@ -102,7 +102,7 @@ func TestHandlerInitialize(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()
 
-	result, err := handler.Handle(context.Background(), "initialize", nil)
+	result, err := handler.Handle(context.Background(), lsp.MethodInitialize, nil)
 	if err != nil {
 		t.Fatalf("initialize error = %v", err)
 	}
@@ -124,7 +124,7 @@ func TestHandlerInitializeDiscoversWorkspaceInBackground(t *testing.T) {
 	writeFile(t, filepath.Join(root, "module.nix"), "{}")
 	rootURI := mustURI(t, root)
 
-	if _, err := handler.Handle(context.Background(), "initialize", mustJSON(t, map[string]any{
+	if _, err := handler.Handle(context.Background(), lsp.MethodInitialize, mustJSON(t, map[string]any{
 		"rootUri": rootURI,
 	})); err != nil {
 		t.Fatalf("initialize error = %v", err)
@@ -157,7 +157,7 @@ func TestHandlerInitializeStoresWorkspaceDiagnostics(t *testing.T) {
 	rootURI := mustURI(t, root)
 	flakeURI := mustURI(t, flake)
 
-	if _, err := handler.Handle(context.Background(), "initialize", mustJSON(t, map[string]any{
+	if _, err := handler.Handle(context.Background(), lsp.MethodInitialize, mustJSON(t, map[string]any{
 		"rootUri": rootURI,
 	})); err != nil {
 		t.Fatalf("initialize error = %v", err)
@@ -189,7 +189,7 @@ func TestHandlerDidChangeRefreshesStaticDiagnostics(t *testing.T) {
 	rootURI := mustURI(t, root)
 	sourceURI := mustURI(t, source)
 
-	if _, err := handler.Handle(context.Background(), "initialize", mustJSON(t, map[string]any{
+	if _, err := handler.Handle(context.Background(), lsp.MethodInitialize, mustJSON(t, map[string]any{
 		"rootUri": rootURI,
 	})); err != nil {
 		t.Fatalf("initialize error = %v", err)
@@ -205,7 +205,7 @@ func TestHandlerDidChangeRefreshesStaticDiagnostics(t *testing.T) {
 		t.Fatalf("diagnostics after open = %+v, want none", got)
 	}
 
-	_, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
+	_, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidChange, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": sourceURI, "version": 2},
 		"contentChanges": []map[string]any{
 			{"text": "import ./missing.nix"},
@@ -266,7 +266,7 @@ func TestSmokePublishesUnopenedWorkspaceAndDidChangeDiagnostics(t *testing.T) {
 	flakeURI := mustURI(t, flake)
 	sourceURI := mustURI(t, source)
 
-	if _, err := handler.Handle(context.Background(), "initialize", mustJSON(t, map[string]any{
+	if _, err := handler.Handle(context.Background(), lsp.MethodInitialize, mustJSON(t, map[string]any{
 		"rootUri": rootURI,
 	})); err != nil {
 		t.Fatalf("initialize error = %v", err)
@@ -283,7 +283,7 @@ func TestSmokePublishesUnopenedWorkspaceAndDidChangeDiagnostics(t *testing.T) {
 
 	openDocument(t, handler, sourceURI, "{}")
 	waitForPublish(t, notifier, sourceURI, 0)
-	if _, err := handler.Handle(context.Background(), "textDocument/didChange", mustJSON(t, map[string]any{
+	if _, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidChange, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": sourceURI, "version": 2},
 		"contentChanges": []map[string]any{
 			{"text": "import ./other-missing.nix"},
@@ -336,7 +336,7 @@ func TestHandlerInitializeAdvertisesFeatureCapabilities(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()
 
-	result, err := handler.Handle(context.Background(), "initialize", nil)
+	result, err := handler.Handle(context.Background(), lsp.MethodInitialize, nil)
 	if err != nil {
 		t.Fatalf("initialize error = %v", err)
 	}
@@ -478,7 +478,7 @@ func TestHandlerDefinitionOnUnresolvedReturnsNull(t *testing.T) {
 	// 3:   z is unresolved.
 	openDocument(t, handler, uri, "let\n  x = 1;\nin\n  z")
 
-	result, err := handler.Handle(context.Background(), "textDocument/definition", positionParams(t, uri, 3, 2))
+	result, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDefinition, positionParams(t, uri, 3, 2))
 	if err != nil {
 		t.Fatalf("definition error = %v", err)
 	}
@@ -523,9 +523,9 @@ func TestHandlerFeatureRequestsOnUnopenedURIReturnNull(t *testing.T) {
 		method string
 		params json.RawMessage
 	}{
-		{"textDocument/documentSymbol", mustJSON(t, map[string]any{"textDocument": map[string]any{"uri": uri}})},
-		{"textDocument/definition", positionParams(t, uri, 0, 0)},
-		{"textDocument/documentHighlight", positionParams(t, uri, 0, 0)},
+		{lsp.MethodTextDocumentDocumentSymbol, mustJSON(t, map[string]any{"textDocument": map[string]any{"uri": uri}})},
+		{lsp.MethodTextDocumentDefinition, positionParams(t, uri, 0, 0)},
+		{lsp.MethodTextDocumentDocumentHighlight, positionParams(t, uri, 0, 0)},
 	}
 	for _, tc := range cases {
 		result, err := handler.Handle(context.Background(), tc.method, tc.params)
@@ -569,7 +569,7 @@ func assertHighlightSet(t *testing.T, highlights []DocumentHighlight) {
 
 func requestDocumentSymbols(t *testing.T, handler *Handler, uri string) []DocumentSymbol {
 	t.Helper()
-	result, err := handler.Handle(context.Background(), "textDocument/documentSymbol", mustJSON(t, map[string]any{
+	result, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDocumentSymbol, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": uri},
 	}))
 	if err != nil {
@@ -584,7 +584,7 @@ func requestDocumentSymbols(t *testing.T, handler *Handler, uri string) []Docume
 
 func requestDefinition(t *testing.T, handler *Handler, uri string, line, character int) *Location {
 	t.Helper()
-	result, err := handler.Handle(context.Background(), "textDocument/definition", positionParams(t, uri, line, character))
+	result, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDefinition, positionParams(t, uri, line, character))
 	if err != nil {
 		t.Fatalf("definition error = %v", err)
 	}
@@ -600,7 +600,7 @@ func requestDefinition(t *testing.T, handler *Handler, uri string, line, charact
 
 func requestHighlights(t *testing.T, handler *Handler, uri string, line, character int) []DocumentHighlight {
 	t.Helper()
-	result, err := handler.Handle(context.Background(), "textDocument/documentHighlight", positionParams(t, uri, line, character))
+	result, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDocumentHighlight, positionParams(t, uri, line, character))
 	if err != nil {
 		t.Fatalf("documentHighlight error = %v", err)
 	}
@@ -632,7 +632,7 @@ func symbolByName(t *testing.T, symbols []DocumentSymbol, name string) DocumentS
 
 func openDocument(t *testing.T, handler *Handler, uri string, text string) {
 	t.Helper()
-	_, err := handler.Handle(context.Background(), "textDocument/didOpen", mustJSON(t, map[string]any{
+	_, err := handler.Handle(context.Background(), lsp.MethodTextDocumentDidOpen, mustJSON(t, map[string]any{
 		"textDocument": map[string]any{"uri": uri, "text": text},
 	}))
 	if err != nil {

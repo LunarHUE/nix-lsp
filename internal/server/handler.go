@@ -48,11 +48,11 @@ type Handler struct {
 	// waiters (tests) block for a specific generation to land instead of polling
 	// with sleeps. Never send on it; only close/replace signals a broadcast.
 	diagPublished chan struct{}
-	workspace      project.Workspace
-	workspaceOK    bool
-	workspaceErr   error
-	workspaceDone  chan struct{}
-	generation     uint64
+	workspace     project.Workspace
+	workspaceOK   bool
+	workspaceErr  error
+	workspaceDone chan struct{}
+	generation    uint64
 
 	notifier          lsp.Notifier
 	caller            lsp.Caller
@@ -183,6 +183,33 @@ func (h *Handler) Close() {
 	h.publisher.Stop()
 }
 
+// handledMethods lists every LSP method the dispatch switch in Handle answers
+// (i.e. every method that does not fall through to the method-not-found default).
+// It is the runtime handle on the switch that lets methods_test.go assert the
+// capability<->handler correspondence exhaustively: keep it in lockstep with the
+// switch below, since a case added here without a table update (or vice versa)
+// is exactly the drift those tests exist to catch.
+var handledMethods = []string{
+	lsp.MethodInitialize,
+	lsp.MethodTextDocumentDidOpen,
+	lsp.MethodTextDocumentDidChange,
+	lsp.MethodTextDocumentDidClose,
+	lsp.MethodTextDocumentDocumentSymbol,
+	lsp.MethodTextDocumentDefinition,
+	lsp.MethodTextDocumentHover,
+	lsp.MethodTextDocumentCompletion,
+	lsp.MethodCompletionItemResolve,
+	lsp.MethodTextDocumentDocumentHighlight,
+	lsp.MethodTextDocumentReferences,
+	lsp.MethodTextDocumentFoldingRange,
+	lsp.MethodTextDocumentCodeAction,
+	lsp.MethodWorkspaceSymbol,
+	lsp.MethodWorkspaceExecuteCommand,
+	lsp.MethodWorkspaceDidChangeWatchedFiles,
+	lsp.MethodTextDocumentDidSave,
+	lsp.MethodWorkspaceDidChangeConfiguration,
+}
+
 // Handle implements lsp.Handler.
 func (h *Handler) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	select {
@@ -192,7 +219,7 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 	}
 
 	switch method {
-	case "initialize":
+	case lsp.MethodInitialize:
 		h.mu.Lock()
 		h.progressSupported = initializeProgressSupported(params)
 		h.mu.Unlock()
@@ -217,37 +244,37 @@ func (h *Handler) Handle(ctx context.Context, method string, params json.RawMess
 				Name: "nix-lsp",
 			},
 		}, nil
-	case "textDocument/didOpen":
+	case lsp.MethodTextDocumentDidOpen:
 		return nil, h.didOpen(params)
-	case "textDocument/didChange":
+	case lsp.MethodTextDocumentDidChange:
 		return nil, h.didChange(params)
-	case "textDocument/didClose":
+	case lsp.MethodTextDocumentDidClose:
 		return nil, h.didClose(params)
-	case "textDocument/documentSymbol":
+	case lsp.MethodTextDocumentDocumentSymbol:
 		return h.documentSymbol(ctx, params)
-	case "textDocument/definition":
+	case lsp.MethodTextDocumentDefinition:
 		return h.definition(ctx, params)
-	case "textDocument/hover":
+	case lsp.MethodTextDocumentHover:
 		return h.hover(ctx, params)
-	case "textDocument/completion":
+	case lsp.MethodTextDocumentCompletion:
 		return h.completion(ctx, params)
-	case "completionItem/resolve":
+	case lsp.MethodCompletionItemResolve:
 		return h.completionResolve(params)
-	case "textDocument/documentHighlight":
+	case lsp.MethodTextDocumentDocumentHighlight:
 		return h.documentHighlight(ctx, params)
-	case "textDocument/references":
+	case lsp.MethodTextDocumentReferences:
 		return h.references(ctx, params)
-	case "textDocument/foldingRange":
+	case lsp.MethodTextDocumentFoldingRange:
 		return h.foldingRange(ctx, params)
-	case "textDocument/codeAction":
+	case lsp.MethodTextDocumentCodeAction:
 		return h.codeAction(ctx, params)
-	case "workspace/symbol":
+	case lsp.MethodWorkspaceSymbol:
 		return h.workspaceSymbol(ctx, params)
-	case "workspace/executeCommand":
+	case lsp.MethodWorkspaceExecuteCommand:
 		return h.executeCommand(ctx, params)
-	case "workspace/didChangeWatchedFiles":
+	case lsp.MethodWorkspaceDidChangeWatchedFiles:
 		return nil, h.didChangeWatchedFiles(params)
-	case "textDocument/didSave", "workspace/didChangeConfiguration":
+	case lsp.MethodTextDocumentDidSave, lsp.MethodWorkspaceDidChangeConfiguration:
 		return nil, nil
 	default:
 		return nil, &lsp.ResponseError{Code: errMethodNotFound, Message: fmt.Sprintf("method not found: %s", method)}

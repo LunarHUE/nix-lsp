@@ -175,7 +175,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := s.dispatch(ctx, msg); err != nil {
 			return err
 		}
-		if msg.IsNotification() && msg.Method == "exit" {
+		if msg.IsNotification() && msg.Method == MethodExit {
 			return nil
 		}
 	}
@@ -194,7 +194,7 @@ func (s *Server) dispatch(ctx context.Context, msg *Message) error {
 		go s.dispatchRequest(reqCtx, msg, key, cancel)
 		return nil
 	case msg.IsNotification():
-		if msg.Method == "$/cancelRequest" {
+		if msg.Method == MethodCancelRequest {
 			return s.cancelRequest(msg.Params)
 		}
 		return s.handleNotification(ctx, msg.Method, msg.Params)
@@ -228,7 +228,7 @@ func (s *Server) dispatchRequest(ctx context.Context, msg *Message, key string, 
 }
 
 func (s *Server) handleRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
-	if method == "shutdown" {
+	if method == MethodShutdown {
 		s.mu.Lock()
 		s.shuttingDown = true
 		s.mu.Unlock()
@@ -242,7 +242,7 @@ func (s *Server) handleRequest(ctx context.Context, method string, params json.R
 // Unknown methods (e.g. $/setTrace, which the spec says to ignore) are dropped
 // silently; other handler errors are logged to stderr.
 func (s *Server) handleNotification(ctx context.Context, method string, params json.RawMessage) error {
-	if method == "initialized" || method == "exit" {
+	if method == MethodInitialized || method == MethodExit {
 		return nil
 	}
 	_, err := s.handler.Handle(ctx, method, params)
@@ -337,7 +337,7 @@ type LifecycleHandler struct{}
 
 func (LifecycleHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
-	case "initialize":
+	case MethodInitialize:
 		return InitializeResult{
 			Capabilities: ServerCapabilities{
 				TextDocumentSync: 1,
