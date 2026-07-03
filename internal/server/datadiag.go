@@ -63,7 +63,7 @@ func (h *Handler) enrichSyntaxDiagnostics(ctx context.Context, fileID string, di
 	if err != nil || tree == nil {
 		return diags
 	}
-	return datadiag.EnrichSyntaxDiagnostics(tree, optionsIndex, diags)
+	return datadiag.EnrichSyntaxDiagnostics(ctx, tree, optionsIndex, diags)
 }
 
 // appendDataset appends the plain syntax.Diagnostic of each rich dataset

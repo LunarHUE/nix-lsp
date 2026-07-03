@@ -499,6 +499,85 @@ func TestConcurrentReadDuringSupersession(t *testing.T) {
 	}
 }
 
+// TestRepairedParseTreeCleanFileReusesPlainTree verifies the happy path: a clean
+// file's repaired result carries Repaired=false and the very same tree the plain
+// ParseTree query produced (no extra parse), and the query depends on ParseTree.
+func TestRepairedParseTreeCleanFileReusesPlainTree(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "default.nix"), "{ x = 1; }")
+	content := []byte("{ x = 1; }")
+	id := FileID(source, vfs.ContentHash(content))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+	SetFileInput(engine, id, FileInput{Path: source, Content: content})
+
+	plain, err := ParseTree(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("ParseTree error = %v", err)
+	}
+	res, err := RepairedParseTree(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("RepairedParseTree error = %v", err)
+	}
+	if res.Repaired {
+		t.Errorf("Repaired = true for clean file")
+	}
+	if res.Tree != plain {
+		t.Errorf("repaired result did not reuse the memoized plain tree")
+	}
+
+	deps := keySet(engine.Dependencies(RepairedParseTreeKey(id)))
+	if !deps[ParseTreeKey(id)] {
+		t.Fatalf("RepairedParseTree did not depend on ParseTree: %v", deps)
+	}
+	if deps[FileInputKey(id)] {
+		t.Errorf("clean-path RepairedParseTree read FileInput; it should short-circuit on the clean tree")
+	}
+}
+
+// TestRepairedParseTreeBrokenFileRepairs verifies the broken path: an
+// unterminated binding yields a repaired, error-free tree with Repaired=true,
+// caches under the ORIGINAL fileID, and depends on both ParseTree and FileInput.
+func TestRepairedParseTreeBrokenFileRepairs(t *testing.T) {
+	engine := NewEngineForTest()
+	root := t.TempDir()
+	source := writeFile(t, filepath.Join(root, "default.nix"), "{ x = 1 }")
+	content := []byte("{ x = 1 }")
+	id := FileID(source, vfs.ContentHash(content))
+	SetWorkspace(engine, project.Workspace{Root: normalize(t, root)})
+	SetFileInput(engine, id, FileInput{Path: source, Content: content})
+
+	res, err := RepairedParseTree(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("RepairedParseTree error = %v", err)
+	}
+	if !res.Repaired {
+		t.Fatalf("Repaired = false, want true for broken file")
+	}
+	if res.Tree.Root().HasError() {
+		t.Errorf("repaired tree still has errors")
+	}
+	if got := string(res.Tree.Content()); got != "{ x = 1; }" {
+		t.Errorf("repaired content = %q, want %q", got, "{ x = 1; }")
+	}
+	// The plain ParseTree fact keeps reporting the error: repair never feeds it.
+	plain, err := ParseTree(context.Background(), engine, id)
+	if err != nil {
+		t.Fatalf("ParseTree error = %v", err)
+	}
+	if !plain.Root().HasError() {
+		t.Errorf("plain ParseTree lost its error; repair must not touch the diagnostics tree")
+	}
+
+	deps := keySet(engine.Dependencies(RepairedParseTreeKey(id)))
+	if !deps[ParseTreeKey(id)] {
+		t.Fatalf("RepairedParseTree did not depend on ParseTree: %v", deps)
+	}
+	if !deps[FileInputKey(id)] {
+		t.Fatalf("broken-path RepairedParseTree did not depend on FileInput: %v", deps)
+	}
+}
+
 func runGitFixture(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)

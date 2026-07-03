@@ -1,6 +1,7 @@
 package datadiag
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -26,7 +27,7 @@ const maxHintChildren = 4
 // the diagnostic count), and returns the input slice untouched when nothing
 // applies — otherwise a fresh slice, never mutating diags in place (the caller's
 // slice may be memoized).
-func EnrichSyntaxDiagnostics(tree *syntax.Tree, index *options.Index, diags []syntax.Diagnostic) []syntax.Diagnostic {
+func EnrichSyntaxDiagnostics(ctx context.Context, tree *syntax.Tree, index *options.Index, diags []syntax.Diagnostic) []syntax.Diagnostic {
 	if tree == nil || index == nil || len(diags) == 0 {
 		return diags
 	}
@@ -48,13 +49,35 @@ func EnrichSyntaxDiagnostics(tree *syntax.Tree, index *options.Index, diags []sy
 		return diags
 	}
 
+	// Locate each error's enclosing option path on a REPAIRED tree. On a broken
+	// buffer tree-sitter's error recovery reshapes nodes (a missing ';' can swallow
+	// the following binding, reparent a value, or wrap a stray brace in an ERROR),
+	// and the enclosing-binding walk historically had to tolerate those shapes. A
+	// repaired tree restores the clean binding nesting, so the walk sees the real
+	// path. Repair NEVER feeds diagnostics: the messages enriched below still came
+	// from the original tree (they are the caller's `diags`); the repaired tree is
+	// used only to find where a broken value sits. Diagnostic positions are in the
+	// original tree's coordinates, so each is mapped through the repair edit list
+	// before the walk. When repair does not apply the original tree is walked with
+	// the position unchanged, preserving the pre-repair behavior exactly.
+	walkTree := tree
+	var repair *syntax.RepairResult
+	if r, err := syntax.RepairParse(ctx, tree.Content()); err == nil && r.Repaired {
+		walkTree = r.Tree
+		repair = r
+	}
+
 	out := diags
 	changed := false
 	for i, d := range diags {
 		if d.Code != syntaxErrorCode {
 			continue
 		}
-		segs, ok := enclosingBindingPathAt(tree, d.Range.Start)
+		pos := d.Range.Start
+		if repair != nil {
+			pos = repair.MapPosition(d.Range.Start)
+		}
+		segs, ok := enclosingBindingPathAt(walkTree, pos)
 		if !ok {
 			continue
 		}

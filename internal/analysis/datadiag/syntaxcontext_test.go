@@ -1,6 +1,7 @@
 package datadiag
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func enriched(t *testing.T, src string) ([]syntax.Diagnostic, []syntax.Diagnosti
 	t.Helper()
 	tree := mustParse(t, src)
 	in := tree.Diagnostics()
-	out := EnrichSyntaxDiagnostics(tree, loadOptionsIndex(t), in)
+	out := EnrichSyntaxDiagnostics(context.Background(), tree, loadOptionsIndex(t), in)
 	return in, out
 }
 
@@ -38,6 +39,31 @@ func TestEnrichSyntaxUserSnippetAddsOptionGuidance(t *testing.T) {
 	// The input slice is never mutated (it may be memoized upstream).
 	if strings.Contains(in[0].Message, "accepts options") {
 		t.Errorf("input diagnostic mutated in place: %q", in[0].Message)
+	}
+}
+
+// TestEnrichSyntaxSwallowedBindingGroupResolves covers a missing ';' after a
+// `networking.firewall = { ... }` group whose recovery swallows the following
+// binding. Enrichment now walks the repaired tree (clean binding nesting) to find
+// the enclosing option path, and this pins that the group path still resolves to
+// its children hint through the repaired-tree path.
+func TestEnrichSyntaxSwallowedBindingGroupResolves(t *testing.T) {
+	src := "{ config, ... }:\n{\n  networking.firewall = {\n    enable = true;\n  }\n  services.openssh.enable = true;\n}\n"
+	in, out := enriched(t, src)
+	if len(in) == 0 {
+		t.Fatal("probe produced no syntax error; recovery changed")
+	}
+	found := false
+	for i := range out {
+		if strings.Contains(out[i].Message, "networking.firewall accepts options like") {
+			found = true
+			if !strings.Contains(out[i].Message, "allowedTCPPorts") || !strings.Contains(out[i].Message, "enable") {
+				t.Errorf("hint missing expected children: %q", out[i].Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no enrichment resolved the enclosing option path on the repaired tree; messages: %+v", out)
 	}
 }
 
@@ -80,7 +106,7 @@ func TestEnrichSyntaxErrorOutsideBindingUnchanged(t *testing.T) {
 	if len(in) == 0 {
 		t.Skip("probe produced no syntax error; recovery changed")
 	}
-	out := EnrichSyntaxDiagnostics(tree, loadOptionsIndex(t), in)
+	out := EnrichSyntaxDiagnostics(context.Background(), tree, loadOptionsIndex(t), in)
 	for i := range out {
 		if out[i].Message != in[i].Message {
 			t.Errorf("message %d changed to %q for an error outside bindings", i, out[i].Message)
@@ -91,13 +117,13 @@ func TestEnrichSyntaxErrorOutsideBindingUnchanged(t *testing.T) {
 func TestEnrichSyntaxNilInputsUnchanged(t *testing.T) {
 	tree := mustParse(t, userSnippetModule)
 	in := tree.Diagnostics()
-	if out := EnrichSyntaxDiagnostics(nil, loadOptionsIndex(t), in); len(out) != len(in) || out[0].Message != in[0].Message {
+	if out := EnrichSyntaxDiagnostics(context.Background(), nil, loadOptionsIndex(t), in); len(out) != len(in) || out[0].Message != in[0].Message {
 		t.Errorf("nil tree changed diagnostics: %+v", out)
 	}
-	if out := EnrichSyntaxDiagnostics(tree, nil, in); len(out) != len(in) || out[0].Message != in[0].Message {
+	if out := EnrichSyntaxDiagnostics(context.Background(), tree, nil, in); len(out) != len(in) || out[0].Message != in[0].Message {
 		t.Errorf("nil index changed diagnostics: %+v", out)
 	}
-	if out := EnrichSyntaxDiagnostics(tree, loadOptionsIndex(t), nil); out != nil {
+	if out := EnrichSyntaxDiagnostics(context.Background(), tree, loadOptionsIndex(t), nil); out != nil {
 		t.Errorf("nil diags = %+v, want nil", out)
 	}
 }

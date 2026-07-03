@@ -20,6 +20,7 @@ const (
 	QueryFileInput       = "FileInput"
 	QueryWorkspace       = "Workspace"
 	QueryParseTree       = "ParseTree"
+	QueryRepairedTree    = "RepairedParseTree"
 	QueryImportEdges     = "ImportEdges"
 	QueryScopes          = "Scopes"
 	QueryFileDiagnostics = "FileDiagnostics"
@@ -61,6 +62,7 @@ func FileID(path, hash string) string {
 // Register installs the production analysis queries.
 func Register(engine *memo.Engine) {
 	engine.Register(QueryParseTree, parseTree)
+	engine.Register(QueryRepairedTree, repairedParseTree)
 	engine.Register(QueryImportEdges, importEdges)
 	engine.Register(QueryScopes, scopesQuery)
 	engine.Register(QueryFlakeModel, flakeModel)
@@ -179,6 +181,15 @@ func ParseTreeKey(fileID string) memo.Key {
 	return memo.Key{Kind: QueryParseTree, ID: fileID}
 }
 
+// RepairedParseTreeKey returns the repaired-parse-tree query key for fileID. The
+// repaired tree caches under the ORIGINAL fileID: repaired source bytes are an
+// internal artifact of this query, never a new file input, so they mint no new
+// FileID and the entry is evicted with the rest of the file's subgraph on the
+// next edit.
+func RepairedParseTreeKey(fileID string) memo.Key {
+	return memo.Key{Kind: QueryRepairedTree, ID: fileID}
+}
+
 // ImportEdgesKey returns the import edge query key for fileID.
 func ImportEdgesKey(fileID string) memo.Key {
 	return memo.Key{Kind: QueryImportEdges, ID: fileID}
@@ -252,6 +263,25 @@ func ParseTree(ctx context.Context, engine *memo.Engine, fileID string) (*syntax
 	return tree, nil
 }
 
+// RepairedParseTree reads the repaired parse tree for fileID from the memo
+// engine. fileID must be a composite produced by FileID(path, hash). The result
+// carries a well-formed tree for consumers that must walk a clean structure
+// (completion/hover context, option-path enrichment); its Repaired flag reports
+// whether any repair was applied, and its edit list maps positions back to the
+// original coordinates. Diagnostics never read this — they come from ParseTree,
+// the untouched original.
+func RepairedParseTree(ctx context.Context, engine *memo.Engine, fileID string) (*syntax.RepairResult, error) {
+	value, err := engine.Get(ctx, RepairedParseTreeKey(fileID))
+	if err != nil {
+		return nil, err
+	}
+	result, ok := value.(*syntax.RepairResult)
+	if !ok {
+		return nil, fmt.Errorf("facts: RepairedParseTree returned %T", value)
+	}
+	return result, nil
+}
+
 // FlakeModel reads the flake input model for fileID from the memo engine.
 // fileID must be a composite produced by FileID(path, hash).
 func FlakeModel(ctx context.Context, engine *memo.Engine, fileID string) (*flake.File, error) {
@@ -297,6 +327,28 @@ func parseTree(ctx context.Context, q *memo.Context, key memo.Key) (any, error) 
 	// cancellation ParseCtx returns a context error (not cached by the memo
 	// engine), so a fresh compute reparses the newest content.
 	return syntax.ParseCtx(ctx, input.Content)
+}
+
+// repairedParseTree runs the bounded source-repair loop, but only when the plain
+// parse already has errors. On the happy path it depends on and returns the
+// memoized plain ParseTree wrapped with Repaired=false, so a clean file pays no
+// extra parse. On the broken path it reads the file content and runs
+// syntax.RepairParse, whose repaired bytes stay internal to this entry (they mint
+// no new FileID). Depending on both the plain tree and the file input keeps this
+// entry invalidated on every edit exactly like the rest of the file's subgraph.
+func repairedParseTree(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
+	tree, err := getParseTree(ctx, q, key.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !tree.Root().HasError() {
+		return syntax.UnrepairedResult(tree), nil
+	}
+	input, err := getFileInput(ctx, q, key.ID)
+	if err != nil {
+		return nil, err
+	}
+	return syntax.RepairParse(ctx, input.Content)
 }
 
 func importEdges(ctx context.Context, q *memo.Context, key memo.Key) (any, error) {
