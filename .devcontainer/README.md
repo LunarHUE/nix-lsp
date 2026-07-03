@@ -25,6 +25,21 @@ ready-to-use Nix development environment. Reopen the repo in a container and —
 If the repo has no committed `.envrc`, `create.sh` synthesizes one (`use flake`)
 automatically. If the repo already commits `.envrc`, it is left untouched.
 
+## No flake yet?
+
+If the target repo has no `flake.nix`, there is no dev shell to load. This folder
+ships a barebones starter — copy it to the repo root and track it:
+
+```sh
+cp .devcontainer/flake.template.nix flake.nix && git add flake.nix
+```
+
+Flakes only see git-tracked files, so the `git add` is required — an untracked
+`flake.nix` is invisible to `nix develop`. On the next container create, `create.sh`
+synthesizes `.envrc` (`use flake`) automatically; if you added the flake to an
+already-running container, run `direnv allow` to load it. Then edit the starter to
+add your project's toolchain.
+
 ## Requirements
 
 - The repo exports a dev shell: `devShells.<system>.default` in `flake.nix`.
