@@ -32,6 +32,5 @@ RUN curl --proto '=https' --tlsv1.2 -sSf -L \
 ENV NIX_EXPECTED_VERSION=3.21.1
 
 ENV PATH="/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin:${PATH}"
-ENV NIX_CONFIG="experimental-features = nix-command flakes"
 
 WORKDIR /workspace

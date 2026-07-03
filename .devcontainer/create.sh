@@ -17,7 +17,10 @@ append_once() {
 append_once "$HOME/.bashrc" "export PS1='\\[\\e[1;32m\\]\\u@${PROJECT_NAME}\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]\\$ '"
 append_once "$HOME/.bashrc" 'eval "$(direnv hook bash)"'
 
-# Configure nix (Enable flake and Nix-Command)
+# Configure nix. This user nix.conf is the single explicit place experimental-features
+# are set (Determinate's system /etc/nix/nix.conf already enables them via
+# extra-experimental-features; these lines are the belt-and-suspenders source of truth
+# now that the Dockerfile NIX_CONFIG env and devcontainer.json containerEnv are gone).
 mkdir -p "$HOME/.config/nix"
 append_once "$HOME/.config/nix/nix.conf" "experimental-features = nix-command flakes"
 append_once "$HOME/.config/nix/nix.conf" "warn-dirty = false"
