@@ -22,6 +22,13 @@ mkdir -p "$HOME/.config/nix"
 append_once "$HOME/.config/nix/nix.conf" "experimental-features = nix-command flakes"
 append_once "$HOME/.config/nix/nix.conf" "warn-dirty = false"
 
+# Drop-in fallback: repos that don't commit a .envrc get one synthesized so
+# direnv auto-loads the flake devshell. Dormant in this repo (.envrc is committed).
+if [ ! -f "$WORKSPACE_DIR/.envrc" ] && [ -f "$WORKSPACE_DIR/flake.nix" ]; then
+  echo 'use flake' > "$WORKSPACE_DIR/.envrc" \
+    || echo "warning: could not write $WORKSPACE_DIR/.envrc; skipping direnv setup" >&2
+fi
+
 if [ -f "$WORKSPACE_DIR/.envrc" ]; then
   direnv allow "$WORKSPACE_DIR" \
     || echo "warning: 'direnv allow' failed; env will load once the flake is fixed" >&2
@@ -43,5 +50,23 @@ git lfs install --skip-repo
 # installer version (see .devcontainer/Dockerfile) is immediately visible.
 echo "nix version: $(nix --version)"
 
-echo "Warming the nix devshell (first run on a fresh /nix volume can take several minutes)..."
-nix develop "$WORKSPACE_DIR" --command true
+# Pre-build the devshell so the first terminal opens warm. Non-fatal: a broken
+# flake or a missing devShells.default must not abort container creation.
+if [ ! -f "$WORKSPACE_DIR/flake.nix" ]; then
+  echo "No flake.nix in $WORKSPACE_DIR; skipping devshell warm step."
+else
+  echo "Warming the nix devshell (first run on a fresh /nix volume can take several minutes)..."
+  if ! nix develop "$WORKSPACE_DIR" --command true; then
+    {
+      echo ""
+      echo "========================================================================"
+      echo "WARNING: the nix devshell failed to build."
+      echo ""
+      echo "Container creation will continue, but terminals will lack the dev"
+      echo "tooling until 'nix develop' succeeds. Check that flake.nix is valid and"
+      echo "exports devShells.<system>.default, then re-run 'nix develop'."
+      echo "========================================================================"
+      echo ""
+    } >&2
+  fi
+fi
