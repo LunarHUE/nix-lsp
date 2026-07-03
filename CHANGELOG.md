@@ -70,6 +70,18 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
 
 ### Added — 2026-07-03
 
+- **Option-aware syntax guidance**: a missing `;` after a binding — previously
+  invisible (tree-sitter reports it as an anonymous zero-width token the
+  diagnostics walk never visited) — now reports `missing ';' after binding`,
+  and when the broken binding sits inside a known option path the message
+  appends what belongs there:
+  `— networking.wireguard.interfaces.wg0 accepts options like ips, peers,
+  privateKey`. Name-bearing hints are emitted only when the parse tree proves
+  the complete identifier, so a stale keystroke can never blame a truncated
+  name.
+- **Empty-body option completion**: invoking completion inside the empty
+  braces of `wg0 = { }` under an options attrset lists the submodule's
+  options (`ips`, `peers`, `privateKey`, ...), not just after typing begins.
 - **Real Nix logo file icons**: the language icon now uses the NixOS
   lambda-snowflake (CC-BY-4.0, NixOS Foundation) — near-black for light
   themes, brand light blue for dark themes — replacing the placeholder mark.

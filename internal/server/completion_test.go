@@ -173,6 +173,37 @@ func TestHandlerCompletionOptionPathLeaf(t *testing.T) {
 	}
 }
 
+func TestHandlerCompletionOptionEmptyAttrsetBody(t *testing.T) {
+	handler := NewHandler()
+	defer handler.Close()
+	// Cursor inside the empty braces of a wildcard-instance submodule value: the
+	// enclosing binding path resolves through <name> and its options complete
+	// with nothing typed.
+	src := "{ config, pkgs, ... }: { networking.wireguard.interfaces.wg0 = {  }; }"
+	uri := completionModule(t, handler, src)
+
+	line, char := posAfter(t, src, "= { ")
+	list := requestCompletionList(t, handler, uri, line, char)
+
+	ips := itemByLabel(t, list, "ips")
+	if ips.Kind != completionItemKindField {
+		t.Errorf("ips kind = %d, want %d (Field leaf)", ips.Kind, completionItemKindField)
+	}
+	if ips.Detail != "list of string" {
+		t.Errorf("ips detail = %q, want list of string", ips.Detail)
+	}
+	itemByLabel(t, list, "peers")
+	itemByLabel(t, list, "privateKey")
+	// The edit inserts at the cursor: a zero-width replace range.
+	if ips.TextEdit == nil {
+		t.Fatal("ips TextEdit = nil, want an insert edit")
+	}
+	r := ips.TextEdit.Range
+	if r.Start != r.End || r.Start.Line != line || r.Start.Character != char {
+		t.Errorf("TextEdit range = %+v, want zero-width at %d:%d", r, line, char)
+	}
+}
+
 func TestHandlerCompletionOptionPathNilIndexReturnsNull(t *testing.T) {
 	handler := NewHandler()
 	defer handler.Close()
