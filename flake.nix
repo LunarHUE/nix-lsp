@@ -60,20 +60,54 @@
           postgresql
           opentofu
         ];
-        # Everything the Go build needs and nothing volatile: sources, the
-        # vendored tree-sitter grammar (cgo-included from internal/syntax), and
-        # the extension assets the vsix derivation packages. Excludes built
-        # artifacts, node_modules, and local state so the store hash stays
-        # stable across dev churn.
-        serverSrc = nixpkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: _type:
-            let rel = nixpkgs.lib.removePrefix (toString ./. + "/") (toString path);
-            in !(nixpkgs.lib.hasPrefix "editors/vscode/node_modules" rel
-              || nixpkgs.lib.hasPrefix "editors/vscode/out" rel
-              || nixpkgs.lib.hasPrefix "examples" rel
-              || nixpkgs.lib.hasPrefix "docs" rel
-              || rel == "nixls");
+        # ALLOWLIST sources: only paths a derivation actually reads are copied
+        # into the store, so churn in README/CHANGELOG/.github/.devcontainer/
+        # CLAUDE.md/etc can never invalidate a build hash. The Go server and the
+        # VS Code extension get SEPARATE allowlisted sources so that editing one
+        # can never rebuild the other.
+        #
+        # cleanSourceWith's filter also runs on directories; returning false for
+        # one prunes its whole subtree, so a directory is kept when it is (or
+        # lives under) an allowed root, OR when it is an ancestor of one (e.g.
+        # "editors" must be kept so the walk can descend to "editors/vscode").
+        # `exclude` re-drops paths under an allowed root (built artifacts).
+        mkAllowlistSrc = { allowed, exclude ? [ ] }:
+          let
+            lib = nixpkgs.lib;
+            root = toString ./.;
+          in
+          lib.cleanSourceWith {
+            src = ./.;
+            filter = path: _type:
+              let
+                rel = lib.removePrefix (root + "/") (toString path);
+                underAllowed = lib.any
+                  (a: rel == a || lib.hasPrefix (a + "/") rel) allowed;
+                ancestorOfAllowed = lib.any
+                  (a: lib.hasPrefix (rel + "/") a) allowed;
+              in
+              rel == ""
+              || ((underAllowed || ancestorOfAllowed)
+                && !lib.any (e: rel == e || lib.hasPrefix (e + "/") rel) exclude);
+          };
+
+        # The Go server build reads exactly:
+        #   - go.mod, go.sum   (module + vendorHash inputs)
+        #   - cmd/, internal/  (Go sources; checkPhase runs `go test ./...`)
+        #   - third_party/     (vendored tree-sitter grammar, cgo-compiled from
+        #                       internal/syntax)
+        #   - testdata/        (fixtures the internal/* tests load)
+        # No package uses //go:embed, so nothing else at the repo root is read.
+        serverSrc = mkAllowlistSrc {
+          allowed = [ "go.mod" "go.sum" "cmd" "internal" "third_party" "testdata" ];
+        };
+
+        # The vsix derivation reads only the extension tree. vsce rebuilds out/
+        # from src via the "compile" script and prunes devDependencies itself,
+        # so out/ and node_modules are regenerated in the build, not shipped.
+        vsixSrc = mkAllowlistSrc {
+          allowed = [ "editors/vscode" ];
+          exclude = [ "editors/vscode/node_modules" "editors/vscode/out" ];
         };
 
         # The language server. `subPackages` scopes the build/install to
@@ -111,7 +145,7 @@
         vsix = pkgs.buildNpmPackage {
           pname = "nixls-vsix";
           version = nixls.version;
-          src = "${serverSrc}/editors/vscode";
+          src = "${vsixSrc}/editors/vscode";
           npmDepsHash = "sha256-+GNCcK8sNKbtrD2ooOxm0R32hMIXEzi327/tUq4XvKc=";
           npmBuildScript = "compile";
           dontNpmInstall = true;
