@@ -76,9 +76,16 @@
               || rel == "nixls");
         };
 
-        # The language server. buildGoModule runs the full `go test ./...`
-        # suite in checkPhase, so `nix build`/`nix flake check` is also the
-        # verification gate.
+        # The language server. `subPackages` scopes the build/install to
+        # cmd/nixls, but that alone would also scope checkPhase to cmd/nixls
+        # (which has no tests). `preCheck` unsets subPackages so getGoDirs
+        # falls back to `./...`, making checkPhase run the full `go test ./...`
+        # suite (everything under internal/). That is what makes `nix
+        # build`/`nix flake check` the real verification gate. git is in
+        # nativeCheckInputs because tests in internal/{project,server,analysis}
+        # exec `git init/add/ls-files/rev-parse` against throwaway repos (they
+        # skip via exec.LookPath when git is absent, which is why this gap went
+        # unnoticed). No test needs the network or a nix binary.
         nixls = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "nixls";
           version = self.shortRev or self.dirtyShortRev or "dev";
@@ -87,6 +94,8 @@
           subPackages = [ "cmd/nixls" ];
           env.CGO_ENABLED = "1";
           ldflags = [ "-s" "-w" "-X main.version=${self.shortRev or "dev"}" ];
+          nativeCheckInputs = [ pkgs.git ];
+          preCheck = ''unset subPackages'';
         };
         # VS Code platform target for this nix system; the vsix package exists
         # only where the mapping does (Windows has no nix — its VSIX is built
