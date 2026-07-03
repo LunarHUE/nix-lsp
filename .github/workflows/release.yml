@@ -25,8 +25,10 @@ jobs:
             target: linux-x64
           - os: ubuntu-24.04-arm
             target: linux-arm64
-          - os: macos-13
-            target: darwin-x64
+          # Intel macOS is not built: macos-13 (the last x64 runner image) is
+          # deprecated, and macos-14+ are arm64-only. If darwin-x64 is ever
+          # needed again, an arm64 runner can build it via Rosetta with nix
+          # extra-platforms, at the cost of CI complexity.
           - os: macos-14
             target: darwin-arm64
     runs-on: ${{ matrix.os }}

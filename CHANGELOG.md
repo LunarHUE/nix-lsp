@@ -90,7 +90,8 @@ All notable changes to nixls and its VS Code extension. Format loosely follows
   `nix build .#nixls` produces the server (tests run in the check phase) and
   `nix build .#vsix` a platform-specific VSIX with the server bundled at
   `bin/nixls`. CI runs `nix flake check` on PRs, and the release workflow runs
-  `nix build .#vsix` on linux x64/arm64 and macOS x64/arm64 runners; Windows
+  `nix build .#vsix` on linux x64/arm64 and macOS arm64 runners (Intel macOS
+  is not built — the last x64 runner image is deprecated); Windows
   (where nix does not run) keeps a plain Go + npm job producing the same
   artifact shape. The extension resolves the server as explicit
   `nixls.serverPath` → bundled binary → PATH, and standalone binaries attach
