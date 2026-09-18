@@ -51,7 +51,7 @@ jobs:
       # determinate: true is the v21+ default; set explicitly so CI running
       # Determinate Nix (matching the devcontainer) is a choice, not a side
       # effect of an action bump.
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           determinate: true
       # Cache the Nix store on Linux only (no measured speedup on macOS).
